@@ -109,9 +109,7 @@ WHERE ROWNUM <= %d`, usernameFilter, limit)
 
 func (c *connection) ListTables(ctx context.Context, schema, filter string, limit int) ([]database.TableInfo, error) {
 	limit = c.limits.NormalizeListLimit(limit)
-	if schema == "" {
-		schema = c.defaultSchema
-	}
+	schema = c.normalizedSchema(schema)
 	ownerFilter, ownerArg := optionalEqPredicate("owner", 1, schema)
 	nameFilter, nameArg := optionalLikePredicate("object_name", 2, filter)
 	query := fmt.Sprintf(`
@@ -129,7 +127,7 @@ WHERE ROWNUM <= %d`, ownerFilter, nameFilter, limit)
 
 	rows, cleanup, err := c.query(ctx, query, ownerArg, nameArg)
 	if err != nil {
-		return nil, fmt.Errorf("list oracle tables for schema %q: %w", strings.ToUpper(schema), err)
+		return nil, fmt.Errorf("list oracle tables for schema %q: %w", schema, err)
 	}
 	defer cleanup()
 
@@ -149,9 +147,7 @@ WHERE ROWNUM <= %d`, ownerFilter, nameFilter, limit)
 
 func (c *connection) SearchColumns(ctx context.Context, schema, filter string, limit int) ([]database.ColumnMatchInfo, error) {
 	limit = c.limits.NormalizeListLimit(limit)
-	if schema == "" {
-		schema = c.defaultSchema
-	}
+	schema = c.normalizedSchema(schema)
 	ownerFilter, ownerArg := optionalEqPredicate("owner", 1, schema)
 	columnFilter, columnArg := optionalLikePredicate("column_name", 2, filter)
 	query := fmt.Sprintf(`
@@ -167,7 +163,7 @@ WHERE ROWNUM <= %d`, ownerFilter, columnFilter, limit)
 
 	rows, cleanup, err := c.query(ctx, query, ownerArg, columnArg)
 	if err != nil {
-		return nil, fmt.Errorf("search oracle columns for schema %q: %w", strings.ToUpper(schema), err)
+		return nil, fmt.Errorf("search oracle columns for schema %q: %w", schema, err)
 	}
 	defer cleanup()
 
@@ -187,9 +183,7 @@ WHERE ROWNUM <= %d`, ownerFilter, columnFilter, limit)
 
 func (c *connection) ListForeignKeys(ctx context.Context, schema, table string, limit int) ([]database.ForeignKeyInfo, error) {
 	limit = c.limits.NormalizeListLimit(limit)
-	if schema == "" {
-		schema = c.defaultSchema
-	}
+	schema = c.normalizedSchema(schema)
 	ownerFilter, ownerArg := optionalEqPredicate("fk.owner", 1, schema)
 	tableFilter, tableArg := optionalEqPredicate("fk.table_name", 2, table)
 	query := fmt.Sprintf(`
@@ -224,13 +218,16 @@ ORDER BY fk.owner, fk.table_name, fk.constraint_name, fkc.position`, ownerFilter
 
 	rows, cleanup, err := c.query(ctx, query, ownerArg, tableArg)
 	if err != nil {
-		return nil, fmt.Errorf("list oracle foreign keys for schema %q table %q: %w", strings.ToUpper(schema), strings.ToUpper(table), err)
+		return nil, fmt.Errorf("list oracle foreign keys for schema %q table %q: %w", schema, strings.ToUpper(table), err)
 	}
 	defer cleanup()
 
 	results := make([]database.ForeignKeyInfo, 0, limit)
 	for rows.Next() {
-		var item database.ForeignKeyInfo
+		var (
+			item          database.ForeignKeyInfo
+			deleteRuleVal sql.NullString
+		)
 		if err := rows.Scan(
 			&item.ConstraintName,
 			&item.Schema,
@@ -241,10 +238,11 @@ ORDER BY fk.owner, fk.table_name, fk.constraint_name, fkc.position`, ownerFilter
 			&item.ReferencedTable,
 			&item.ReferencedColumn,
 			&item.UpdateRule,
-			&item.DeleteRule,
+			&deleteRuleVal,
 		); err != nil {
 			return nil, fmt.Errorf("scan oracle foreign key row: %w", err)
 		}
+		item.DeleteRule = nullStringValue(deleteRuleVal)
 		results = append(results, item)
 		if len(results) >= limit {
 			return results, nil
@@ -258,9 +256,7 @@ ORDER BY fk.owner, fk.table_name, fk.constraint_name, fkc.position`, ownerFilter
 
 func (c *connection) ListIndexes(ctx context.Context, schema, table string, limit int) ([]database.IndexInfo, error) {
 	limit = c.limits.NormalizeListLimit(limit)
-	if schema == "" {
-		schema = c.defaultSchema
-	}
+	schema = c.normalizedSchema(schema)
 	ownerFilter, ownerArg := optionalEqPredicate("ai.table_owner", 1, schema)
 	tableFilter, tableArg := optionalEqPredicate("ai.table_name", 2, table)
 	query := fmt.Sprintf(`
@@ -290,7 +286,7 @@ ORDER BY ai.table_owner, ai.table_name, ai.index_name, aic.column_position`, own
 
 	rows, cleanup, err := c.query(ctx, query, ownerArg, tableArg)
 	if err != nil {
-		return nil, fmt.Errorf("list oracle indexes for schema %q table %q: %w", strings.ToUpper(schema), strings.ToUpper(table), err)
+		return nil, fmt.Errorf("list oracle indexes for schema %q table %q: %w", schema, strings.ToUpper(table), err)
 	}
 	defer cleanup()
 
@@ -302,16 +298,17 @@ ORDER BY ai.table_owner, ai.table_name, ai.index_name, aic.column_position`, own
 	for rows.Next() {
 		var (
 			item         database.IndexInfo
-			uniqueness   string
+			indexTypeVal sql.NullString
+			uniqueness   sql.NullString
 			isPrimaryNum int
 			position     int
-			columnName   string
+			columnName   sql.NullString
 		)
 		if err := rows.Scan(
 			&item.Schema,
 			&item.Table,
 			&item.Name,
-			&item.Type,
+			&indexTypeVal,
 			&uniqueness,
 			&isPrimaryNum,
 			&position,
@@ -320,7 +317,8 @@ ORDER BY ai.table_owner, ai.table_name, ai.index_name, aic.column_position`, own
 			return nil, fmt.Errorf("scan oracle index row: %w", err)
 		}
 		_ = position
-		item.Unique = strings.EqualFold(uniqueness, "UNIQUE")
+		item.Type = nullStringValue(indexTypeVal)
+		item.Unique = strings.EqualFold(nullStringValue(uniqueness), "UNIQUE")
 		item.Primary = isPrimaryNum == 1
 		key := item.Schema + "." + item.Table + "." + item.Name
 		if key != lastKey {
@@ -331,8 +329,11 @@ ORDER BY ai.table_owner, ai.table_name, ai.index_name, aic.column_position`, own
 			current = &results[len(results)-1]
 			lastKey = key
 		}
-		if current != nil && columnName != "" {
-			current.Columns = append(current.Columns, columnName)
+		if current != nil {
+			column := nullStringValue(columnName)
+			if column != "" {
+				current.Columns = append(current.Columns, column)
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -342,17 +343,14 @@ ORDER BY ai.table_owner, ai.table_name, ai.index_name, aic.column_position`, own
 }
 
 func (c *connection) GetTableComments(ctx context.Context, schema, table string) (*database.TableCommentInfo, error) {
-	if strings.TrimSpace(table) == "" {
-		return nil, fmt.Errorf("table is required")
+	var err error
+	schema, table, err = c.normalizedSchemaTable(schema, table)
+	if err != nil {
+		return nil, err
 	}
-	if schema == "" {
-		schema = c.defaultSchema
-	}
-	schema = strings.ToUpper(schema)
-	table = strings.ToUpper(strings.TrimSpace(table))
 
 	rows, cleanup, err := c.query(ctx, `
-SELECT NVL(comments, '')
+SELECT comments
 FROM all_tab_comments
 WHERE owner = :1 AND table_name = :2`, schema, table)
 	if err != nil {
@@ -366,16 +364,18 @@ WHERE owner = :1 AND table_name = :2`, schema, table)
 		}
 		return nil, fmt.Errorf("table %s.%s not found or not visible", schema, table)
 	}
-	if err := rows.Scan(&result.TableComment); err != nil {
+	var tableComment sql.NullString
+	if err := rows.Scan(&tableComment); err != nil {
 		cleanup()
 		return nil, fmt.Errorf("scan oracle table comment: %w", err)
 	}
+	result.TableComment = nullStringValue(tableComment)
 	if err := cleanup(); err != nil {
 		return nil, err
 	}
 
 	rows, cleanup, err = c.query(ctx, `
-SELECT column_name, NVL(comments, '')
+SELECT column_name, comments
 FROM all_col_comments
 WHERE owner = :1 AND table_name = :2
 ORDER BY column_name`, schema, table)
@@ -385,10 +385,14 @@ ORDER BY column_name`, schema, table)
 	defer cleanup()
 
 	for rows.Next() {
-		var item database.ColumnCommentInfo
-		if err := rows.Scan(&item.Name, &item.Comment); err != nil {
+		var (
+			item       database.ColumnCommentInfo
+			commentVal sql.NullString
+		)
+		if err := rows.Scan(&item.Name, &commentVal); err != nil {
 			return nil, fmt.Errorf("scan oracle column comment row: %w", err)
 		}
+		item.Comment = nullStringValue(commentVal)
 		result.Columns = append(result.Columns, item)
 	}
 	if err := rows.Err(); err != nil {
@@ -398,20 +402,19 @@ ORDER BY column_name`, schema, table)
 }
 
 func (c *connection) DescribeTable(ctx context.Context, schema, table string) ([]database.ColumnInfo, error) {
-	if table == "" {
-		return nil, fmt.Errorf("table is required")
-	}
-	if schema == "" {
-		schema = c.defaultSchema
+	var err error
+	schema, table, err = c.normalizedSchemaTable(schema, table)
+	if err != nil {
+		return nil, err
 	}
 
 	rows, cleanup, err := c.query(ctx, `
 SELECT column_id, column_name, data_type, data_length, data_precision, data_scale, nullable
 FROM all_tab_columns
 WHERE owner = :1 AND table_name = :2
-ORDER BY column_id`, strings.ToUpper(schema), strings.ToUpper(table))
+ORDER BY column_id`, schema, table)
 	if err != nil {
-		return nil, fmt.Errorf("describe oracle table %s.%s: %w", strings.ToUpper(schema), strings.ToUpper(table), err)
+		return nil, fmt.Errorf("describe oracle table %s.%s: %w", schema, table, err)
 	}
 	defer cleanup()
 
@@ -434,7 +437,7 @@ ORDER BY column_id`, strings.ToUpper(schema), strings.ToUpper(table))
 		results = append(results, item)
 	}
 	if len(results) == 0 {
-		return nil, fmt.Errorf("table %s.%s not found or not visible", strings.ToUpper(schema), strings.ToUpper(table))
+		return nil, fmt.Errorf("table %s.%s not found or not visible", schema, table)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate oracle columns: %w", err)
@@ -503,38 +506,6 @@ func oracleQueryTxOptions() *sql.TxOptions {
 	// go-ora rejects TxOptions.ReadOnly, so we enter a default transaction and
 	// enforce Oracle's read-only mode with SET TRANSACTION READ ONLY instead.
 	return &sql.TxOptions{}
-}
-
-func nullableUpper(value string) any {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return nil
-	}
-	return strings.ToUpper(value)
-}
-
-func nullableLike(value string) any {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return nil
-	}
-	return "%" + strings.ToUpper(value) + "%"
-}
-
-func optionalEqPredicate(column string, position int, value string) (string, any) {
-	return fmt.Sprintf("%s = NVL(:%d, %s)", column, position, column), nullableUpper(value)
-}
-
-func optionalLikePredicate(column string, position int, value string) (string, any) {
-	return fmt.Sprintf("%s LIKE NVL(:%d, %s)", column, position, column), nullableLike(value)
-}
-
-func toPtr(value sql.NullInt64) *int64 {
-	if !value.Valid {
-		return nil
-	}
-	v := value.Int64
-	return &v
 }
 
 func maxInt(a, b int) int {
