@@ -67,3 +67,18 @@ func TestOptionalLikePredicate(t *testing.T) {
 		t.Fatalf("unexpected arg: %#v", arg)
 	}
 }
+
+func TestOracleQueryTxOptions(t *testing.T) {
+	t.Parallel()
+
+	opts := oracleQueryTxOptions()
+	if opts == nil {
+		t.Fatal("expected transaction options")
+	}
+	if opts.ReadOnly {
+		t.Fatal("oracle query transaction must not request ReadOnly from go-ora")
+	}
+	if opts.Isolation != 0 {
+		t.Fatalf("unexpected isolation level: %v", opts.Isolation)
+	}
+}

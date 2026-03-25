@@ -470,7 +470,7 @@ func (c *connection) Close() error {
 
 func (c *connection) query(ctx context.Context, query string, args ...any) (*sql.Rows, func() error, error) {
 	queryCtx, cancel := c.limits.WithTimeout(ctx)
-	tx, err := c.db.BeginTx(queryCtx, &sql.TxOptions{ReadOnly: true})
+	tx, err := c.db.BeginTx(queryCtx, oracleQueryTxOptions())
 	if err != nil {
 		cancel()
 		return nil, nil, err
@@ -497,6 +497,12 @@ func (c *connection) query(ctx context.Context, query string, args ...any) (*sql
 		cancel()
 		return firstErr
 	}, nil
+}
+
+func oracleQueryTxOptions() *sql.TxOptions {
+	// go-ora rejects TxOptions.ReadOnly, so we enter a default transaction and
+	// enforce Oracle's read-only mode with SET TRANSACTION READ ONLY instead.
+	return &sql.TxOptions{}
 }
 
 func nullableUpper(value string) any {
