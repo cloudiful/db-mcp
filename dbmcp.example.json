@@ -1,0 +1,28 @@
+{
+  "server": {
+    "name": "db-mcp",
+    "version": "0.1.0",
+    "transport": "stdio",
+    "httpAddr": ":8080",
+    "httpPath": "/mcp"
+  },
+  "limits": {
+    "defaultMaxRows": 50,
+    "hardMaxRows": 200,
+    "maxColumns": 40,
+    "maxCellChars": 512,
+    "maxTotalChars": 12000,
+    "queryTimeout": "15s"
+  },
+  "connections": [
+    {
+      "name": "oracle-dev",
+      "driver": "oracle",
+      "oracle": {
+        "jdbcUrl": "jdbc:oracle:thin:@localhost:1521:XE",
+        "username": "readuser",
+        "password": "readuser"
+      }
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+.git
+.gitignore
+.gocache
+.gomodcache
+dbmcp
+*.log
+*.out
+*.test
+coverage.*
