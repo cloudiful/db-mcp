@@ -68,7 +68,7 @@ func CollectRows(rows *sql.Rows, maxRows int, limits Limits, startedAt time.Time
 			row[columnNames[i]] = value
 			rowChars += chars
 		}
-		if totalChars > 0 && totalChars+rowChars > limits.MaxTotalChars {
+		if totalChars+rowChars > limits.MaxTotalChars {
 			truncatedReasons["total output limit reached"] = struct{}{}
 			break
 		}

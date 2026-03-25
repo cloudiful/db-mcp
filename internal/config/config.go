@@ -43,15 +43,25 @@ type LimitsConfig struct {
 }
 
 type ConnectionConfig struct {
-	Name   string        `json:"name"`
-	Driver string        `json:"driver"`
-	Oracle *OracleConfig `json:"oracle,omitempty"`
+	Name     string          `json:"name"`
+	Driver   string          `json:"driver"`
+	Oracle   *OracleConfig   `json:"oracle,omitempty"`
+	Postgres *PostgresConfig `json:"postgres,omitempty"`
+	SQLite   *SQLiteConfig   `json:"sqlite,omitempty"`
 }
 
 type OracleConfig struct {
 	JDBCURL  string `json:"jdbcUrl"`
 	Username string `json:"username"`
 	Password string `json:"password"`
+}
+
+type PostgresConfig struct {
+	DSN string `json:"dsn"`
+}
+
+type SQLiteConfig struct {
+	DSN string `json:"dsn"`
 }
 
 func Load(path string) (*Config, error) {
@@ -144,6 +154,20 @@ func (c *Config) Validate() error {
 			if conn.Oracle.JDBCURL == "" || conn.Oracle.Username == "" || conn.Oracle.Password == "" {
 				return fmt.Errorf("connections[%d].oracle requires jdbcUrl, username, and password", i)
 			}
+		case "postgres":
+			if conn.Postgres == nil {
+				return fmt.Errorf("connections[%d].postgres is required", i)
+			}
+			if conn.Postgres.DSN == "" {
+				return fmt.Errorf("connections[%d].postgres requires dsn", i)
+			}
+		case "sqlite":
+			if conn.SQLite == nil {
+				return fmt.Errorf("connections[%d].sqlite is required", i)
+			}
+			if conn.SQLite.DSN == "" {
+				return fmt.Errorf("connections[%d].sqlite requires dsn", i)
+			}
 		default:
 			return fmt.Errorf("unsupported driver %q", conn.Driver)
 		}
@@ -196,8 +220,9 @@ func loadEnv(cfg *Config) {
 	if value := os.Getenv("DBMCP_QUERY_TIMEOUT"); value != "" {
 		cfg.Limits.QueryTimeout = value
 	}
+	var connections []ConnectionConfig
 	if value := os.Getenv("DBMCP_ORACLE_JDBC_URL"); value != "" {
-		cfg.Connections = []ConnectionConfig{{
+		connections = append(connections, ConnectionConfig{
 			Name:   envOr("DBMCP_ORACLE_NAME", "oracle"),
 			Driver: "oracle",
 			Oracle: &OracleConfig{
@@ -205,7 +230,28 @@ func loadEnv(cfg *Config) {
 				Username: os.Getenv("DBMCP_ORACLE_USERNAME"),
 				Password: os.Getenv("DBMCP_ORACLE_PASSWORD"),
 			},
-		}}
+		})
+	}
+	if value := envOr("DBMCP_POSTGRES_DSN", os.Getenv("DATABASE_URL")); value != "" {
+		connections = append(connections, ConnectionConfig{
+			Name:   envOr("DBMCP_POSTGRES_NAME", "postgres"),
+			Driver: "postgres",
+			Postgres: &PostgresConfig{
+				DSN: value,
+			},
+		})
+	}
+	if value := envOr("DBMCP_SQLITE_DSN", os.Getenv("SQLITE_URL")); value != "" {
+		connections = append(connections, ConnectionConfig{
+			Name:   envOr("DBMCP_SQLITE_NAME", "sqlite"),
+			Driver: "sqlite",
+			SQLite: &SQLiteConfig{
+				DSN: value,
+			},
+		})
+	}
+	if len(connections) > 0 {
+		cfg.Connections = connections
 	}
 }
 

@@ -25,3 +25,47 @@ func TestValidateAssignsDefaultConnectionName(t *testing.T) {
 		t.Fatalf("expected default connection name oracle, got %q", cfg.Connections[0].Name)
 	}
 }
+
+func TestValidateAssignsDefaultPostgresConnectionName(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{
+		Server: ServerConfig{},
+		Limits: LimitsConfig{},
+		Connections: []ConnectionConfig{{
+			Driver: "postgres",
+			Postgres: &PostgresConfig{
+				DSN: "postgres://reader:reader@localhost:5432/app?sslmode=disable",
+			},
+		}},
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate config: %v", err)
+	}
+	if cfg.Connections[0].Name != "postgres" {
+		t.Fatalf("expected default connection name postgres, got %q", cfg.Connections[0].Name)
+	}
+}
+
+func TestValidateAssignsDefaultSQLiteConnectionName(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{
+		Server: ServerConfig{},
+		Limits: LimitsConfig{},
+		Connections: []ConnectionConfig{{
+			Driver: "sqlite",
+			SQLite: &SQLiteConfig{
+				DSN: "file:app.db?mode=ro",
+			},
+		}},
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate config: %v", err)
+	}
+	if cfg.Connections[0].Name != "sqlite" {
+		t.Fatalf("expected default connection name sqlite, got %q", cfg.Connections[0].Name)
+	}
+}

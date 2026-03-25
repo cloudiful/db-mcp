@@ -43,3 +43,27 @@ func TestParseJDBCURL(t *testing.T) {
 		})
 	}
 }
+
+func TestOptionalEqPredicate(t *testing.T) {
+	t.Parallel()
+
+	sql, arg := optionalEqPredicate("owner", 1, "ebank")
+	if sql != "owner = NVL(:1, owner)" {
+		t.Fatalf("unexpected predicate: %s", sql)
+	}
+	if arg != "EBANK" {
+		t.Fatalf("unexpected arg: %#v", arg)
+	}
+}
+
+func TestOptionalLikePredicate(t *testing.T) {
+	t.Parallel()
+
+	sql, arg := optionalLikePredicate("object_name", 2, "acct")
+	if sql != "object_name LIKE NVL(:2, object_name)" {
+		t.Fatalf("unexpected predicate: %s", sql)
+	}
+	if arg != "%ACCT%" {
+		t.Fatalf("unexpected arg: %#v", arg)
+	}
+}

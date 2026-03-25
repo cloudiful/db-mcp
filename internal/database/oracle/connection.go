@@ -76,31 +76,36 @@ func (c *connection) Info() database.ConnectionInfo {
 
 func (c *connection) ListSchemas(ctx context.Context, filter string, limit int) ([]database.SchemaInfo, error) {
 	limit = c.limits.NormalizeListLimit(limit)
+	usernameFilter, usernameArg := optionalLikePredicate("username", 1, filter)
 	query := fmt.Sprintf(`
 SELECT username
 FROM (
   SELECT username
   FROM all_users
-  WHERE username LIKE NVL(:1, username)
+  WHERE %s
   ORDER BY username
 )
-WHERE ROWNUM <= %d`, limit)
+WHERE ROWNUM <= %d`, usernameFilter, limit)
 
-	rows, err := c.query(ctx, query, nullableLike(filter))
+	rows, cancel, err := c.query(ctx, query, usernameArg)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list oracle schemas: %w", err)
 	}
+	defer cancel()
 	defer rows.Close()
 
 	var results []database.SchemaInfo
 	for rows.Next() {
 		var name string
 		if err := rows.Scan(&name); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scan oracle schema row: %w", err)
 		}
 		results = append(results, database.SchemaInfo{Name: name})
 	}
-	return results, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate oracle schemas: %w", err)
+	}
+	return results, nil
 }
 
 func (c *connection) ListTables(ctx context.Context, schema, filter string, limit int) ([]database.TableInfo, error) {
@@ -108,6 +113,8 @@ func (c *connection) ListTables(ctx context.Context, schema, filter string, limi
 	if schema == "" {
 		schema = c.defaultSchema
 	}
+	ownerFilter, ownerArg := optionalEqPredicate("owner", 1, schema)
+	nameFilter, nameArg := optionalLikePredicate("object_name", 2, filter)
 	query := fmt.Sprintf(`
 SELECT owner, object_name, object_type
 FROM (
@@ -115,27 +122,31 @@ FROM (
   FROM all_objects
   WHERE object_type IN ('TABLE', 'VIEW')
     AND generated = 'N'
-    AND owner = NVL(:1, owner)
-    AND object_name LIKE NVL(:2, object_name)
+    AND %s
+    AND %s
   ORDER BY owner, object_type, object_name
 )
-WHERE ROWNUM <= %d`, limit)
+WHERE ROWNUM <= %d`, ownerFilter, nameFilter, limit)
 
-	rows, err := c.query(ctx, query, nullableUpper(schema), nullableLike(filter))
+	rows, cancel, err := c.query(ctx, query, ownerArg, nameArg)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list oracle tables for schema %q: %w", strings.ToUpper(schema), err)
 	}
+	defer cancel()
 	defer rows.Close()
 
 	var results []database.TableInfo
 	for rows.Next() {
 		var item database.TableInfo
 		if err := rows.Scan(&item.Schema, &item.Name, &item.Type); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scan oracle table row: %w", err)
 		}
 		results = append(results, item)
 	}
-	return results, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate oracle tables: %w", err)
+	}
+	return results, nil
 }
 
 func (c *connection) DescribeTable(ctx context.Context, schema, table string) ([]database.ColumnInfo, error) {
@@ -146,14 +157,15 @@ func (c *connection) DescribeTable(ctx context.Context, schema, table string) ([
 		schema = c.defaultSchema
 	}
 
-	rows, err := c.query(ctx, `
+	rows, cancel, err := c.query(ctx, `
 SELECT column_id, column_name, data_type, data_length, data_precision, data_scale, nullable
 FROM all_tab_columns
 WHERE owner = :1 AND table_name = :2
 ORDER BY column_id`, strings.ToUpper(schema), strings.ToUpper(table))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("describe oracle table %s.%s: %w", strings.ToUpper(schema), strings.ToUpper(table), err)
 	}
+	defer cancel()
 	defer rows.Close()
 
 	var results []database.ColumnInfo
@@ -166,7 +178,7 @@ ORDER BY column_id`, strings.ToUpper(schema), strings.ToUpper(table))
 			nullable  string
 		)
 		if err := rows.Scan(&item.Position, &item.Name, &item.DataType, &length, &precision, &scale, &nullable); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scan oracle column row: %w", err)
 		}
 		item.Nullable = strings.EqualFold(nullable, "Y")
 		item.Length = toPtr(length)
@@ -177,7 +189,10 @@ ORDER BY column_id`, strings.ToUpper(schema), strings.ToUpper(table))
 	if len(results) == 0 {
 		return nil, fmt.Errorf("table %s.%s not found or not visible", strings.ToUpper(schema), strings.ToUpper(table))
 	}
-	return results, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate oracle columns: %w", err)
+	}
+	return results, nil
 }
 
 func (c *connection) ExecuteQuery(ctx context.Context, query string, maxRows int) (*database.QueryResult, error) {
@@ -187,10 +202,11 @@ func (c *connection) ExecuteQuery(ctx context.Context, query string, maxRows int
 	}
 	appliedMaxRows := c.limits.NormalizeMaxRows(maxRows)
 	startedAt := time.Now()
-	rows, err := c.query(ctx, normalized)
+	rows, cancel, err := c.query(ctx, normalized)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("execute oracle query: %w", err)
 	}
+	defer cancel()
 	return database.CollectRows(rows, appliedMaxRows, c.limits, startedAt)
 }
 
@@ -198,10 +214,14 @@ func (c *connection) Close() error {
 	return c.db.Close()
 }
 
-func (c *connection) query(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+func (c *connection) query(ctx context.Context, query string, args ...any) (*sql.Rows, context.CancelFunc, error) {
 	queryCtx, cancel := c.limits.WithTimeout(ctx)
-	defer cancel()
-	return c.db.QueryContext(queryCtx, query, args...)
+	rows, err := c.db.QueryContext(queryCtx, query, args...)
+	if err != nil {
+		cancel()
+		return nil, nil, err
+	}
+	return rows, cancel, nil
 }
 
 func nullableUpper(value string) any {
@@ -218,6 +238,14 @@ func nullableLike(value string) any {
 		return nil
 	}
 	return "%" + strings.ToUpper(value) + "%"
+}
+
+func optionalEqPredicate(column string, position int, value string) (string, any) {
+	return fmt.Sprintf("%s = NVL(:%d, %s)", column, position, column), nullableUpper(value)
+}
+
+func optionalLikePredicate(column string, position int, value string) (string, any) {
+	return fmt.Sprintf("%s LIKE NVL(:%d, %s)", column, position, column), nullableLike(value)
 }
 
 func toPtr(value sql.NullInt64) *int64 {

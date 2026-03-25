@@ -1,11 +1,13 @@
 # db-mcp
 
-Minimal MCP server for databases, implemented in Go. The first driver is Oracle, with the service layer kept generic so PostgreSQL and SQLite can be added without changing the MCP tool surface.
+Minimal MCP server for databases, implemented in Go. Oracle, PostgreSQL, and SQLite are supported today, and the service layer stays generic so more drivers can be added without changing the MCP tool surface.
 
 ## Features
 
 - MCP tools: `list_connections`, `list_schemas`, `list_tables`, `describe_table`, `execute_query`
 - Oracle support via a pure Go driver, so it can connect directly from a Go binary without Oracle Instant Client
+- PostgreSQL support via `pgx` stdlib
+- SQLite support via the pure Go `modernc.org/sqlite` driver
 - Supports `stdio`, `http`, and `both` transport modes
 - Read-only guardrails for ad hoc SQL
 - Row, cell, column, and total output truncation to avoid blowing up MCP context
@@ -18,15 +20,25 @@ Use a JSON config file:
 go run ./cmd/dbmcp -config ./dbmcp.example.json
 ```
 
-Or use environment variables for a single Oracle connection:
+Or use environment variables:
 
 ```bash
 export DBMCP_TRANSPORT=stdio
 export DBMCP_ORACLE_JDBC_URL='jdbc:oracle:thin:@unraid.cloud1ful.com:1521:XE'
 export DBMCP_ORACLE_USERNAME=readuser
 export DBMCP_ORACLE_PASSWORD=readuser
+export DBMCP_POSTGRES_DSN='postgres://reader:reader@localhost:5432/app?sslmode=disable'
+export DBMCP_SQLITE_DSN='file:./app.db?mode=ro'
 go run ./cmd/dbmcp
 ```
+
+Supported environment variables for connections:
+
+- `DBMCP_ORACLE_JDBC_URL`, `DBMCP_ORACLE_USERNAME`, `DBMCP_ORACLE_PASSWORD`, optional `DBMCP_ORACLE_NAME`
+- `DBMCP_POSTGRES_DSN`, optional `DBMCP_POSTGRES_NAME`
+- `DBMCP_SQLITE_DSN`, optional `DBMCP_SQLITE_NAME`
+- `DATABASE_URL` is also accepted as the PostgreSQL DSN fallback
+- `SQLITE_URL` is also accepted as the SQLite DSN fallback
 
 For HTTP mode:
 
@@ -51,6 +63,8 @@ docker run --rm -p 8080:8080 \
   -e DBMCP_ORACLE_JDBC_URL='jdbc:oracle:thin:@unraid.cloud1ful.com:1521:XE' \
   -e DBMCP_ORACLE_USERNAME=readuser \
   -e DBMCP_ORACLE_PASSWORD=readuser \
+  -e DBMCP_POSTGRES_DSN='postgres://reader:reader@postgres:5432/app?sslmode=disable' \
+  -e DBMCP_SQLITE_DSN='file:/data/app.db?mode=ro' \
   db-mcp:latest
 ```
 
@@ -66,6 +80,12 @@ On startup the server now logs:
 - enabled transport
 - HTTP host, port, and MCP path when HTTP is enabled
 - each configured database connection and whether it connected successfully
+
+For SQLite, prefer a read-only DSN such as:
+
+```text
+file:./app.db?mode=ro
+```
 
 Override startup flags if needed:
 

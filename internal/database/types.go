@@ -52,14 +52,14 @@ type QueryColumn struct {
 }
 
 type QueryResult struct {
-	Columns           []QueryColumn     `json:"columns"`
-	Rows              []map[string]any  `json:"rows"`
-	RowCount          int               `json:"rowCount"`
-	AppliedMaxRows    int               `json:"appliedMaxRows"`
-	Truncated         bool              `json:"truncated"`
-	TruncationReasons []string          `json:"truncationReasons,omitempty"`
-	Notice            string            `json:"notice,omitempty"`
-	ExecutionTime     string            `json:"executionTime"`
+	Columns           []QueryColumn    `json:"columns"`
+	Rows              []map[string]any `json:"rows"`
+	RowCount          int              `json:"rowCount"`
+	AppliedMaxRows    int              `json:"appliedMaxRows"`
+	Truncated         bool             `json:"truncated"`
+	TruncationReasons []string         `json:"truncationReasons,omitempty"`
+	Notice            string           `json:"notice,omitempty"`
+	ExecutionTime     string           `json:"executionTime"`
 }
 
 type Limits struct {
@@ -122,26 +122,30 @@ func Register(driver string, open OpenFunc) {
 func NewManager(ctx context.Context, cfg *config.Config) (*Manager, error) {
 	limits := NewLimits(cfg)
 	connections := make(map[string]Connection, len(cfg.Connections))
-	for i, connCfg := range cfg.Connections {
+	for _, connCfg := range cfg.Connections {
 		open, ok := registry[connCfg.Driver]
 		if !ok {
+			closeConnections(connections)
 			return nil, fmt.Errorf("driver %q is not registered", connCfg.Driver)
 		}
 		conn, err := open(ctx, connCfg, limits)
 		if err != nil {
+			closeConnections(connections)
 			return nil, fmt.Errorf("open %s: %w", connCfg.Name, err)
 		}
 		connections[connCfg.Name] = conn
-		if i == 0 {
-			cfgConnInfo := conn.Info()
-			_ = cfgConnInfo
-		}
 	}
 	return &Manager{
 		connections: connections,
 		defaultName: cfg.Connections[0].Name,
 		limits:      limits,
 	}, nil
+}
+
+func closeConnections(connections map[string]Connection) {
+	for _, conn := range connections {
+		_ = conn.Close()
+	}
 }
 
 func (m *Manager) Limits() Limits {

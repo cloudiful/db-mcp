@@ -17,6 +17,8 @@ import (
 	"db/internal/config"
 	"db/internal/database"
 	_ "db/internal/database/oracle"
+	_ "db/internal/database/postgres"
+	_ "db/internal/database/sqlite"
 	"db/internal/mcpserver"
 )
 

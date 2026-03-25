@@ -23,6 +23,20 @@
         "username": "readuser",
         "password": "readuser"
       }
+    },
+    {
+      "name": "postgres-dev",
+      "driver": "postgres",
+      "postgres": {
+        "dsn": "postgres://reader:reader@localhost:5432/app?sslmode=disable"
+      }
+    },
+    {
+      "name": "sqlite-dev",
+      "driver": "sqlite",
+      "sqlite": {
+        "dsn": "file:./app.db?mode=ro"
+      }
     }
   ]
 }
