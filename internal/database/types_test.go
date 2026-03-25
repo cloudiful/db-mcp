@@ -24,11 +24,31 @@ func (s *stubConnection) ListTables(context.Context, string, string, int) ([]Tab
 	return nil, nil
 }
 
+func (s *stubConnection) SearchColumns(context.Context, string, string, int) ([]ColumnMatchInfo, error) {
+	return nil, nil
+}
+
+func (s *stubConnection) ListForeignKeys(context.Context, string, string, int) ([]ForeignKeyInfo, error) {
+	return nil, nil
+}
+
+func (s *stubConnection) ListIndexes(context.Context, string, string, int) ([]IndexInfo, error) {
+	return nil, nil
+}
+
+func (s *stubConnection) GetTableComments(context.Context, string, string) (*TableCommentInfo, error) {
+	return nil, nil
+}
+
 func (s *stubConnection) DescribeTable(context.Context, string, string) ([]ColumnInfo, error) {
 	return nil, nil
 }
 
 func (s *stubConnection) ExecuteQuery(context.Context, string, int) (*QueryResult, error) {
+	return nil, nil
+}
+
+func (s *stubConnection) ExplainQuery(context.Context, string) (*ExplainResult, error) {
 	return nil, nil
 }
 

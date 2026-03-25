@@ -127,12 +127,11 @@ func TestSQLiteQueryContextStaysAliveUntilRowsClosed(t *testing.T) {
 	defer conn.Close()
 
 	sqliteConn := conn.(*connection)
-	rows, cancel, err := sqliteConn.query(context.Background(), `SELECT 'ok'`)
+	rows, cleanup, err := sqliteConn.query(context.Background(), `SELECT 'ok'`)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
-	defer cancel()
-	defer rows.Close()
+	defer cleanup()
 
 	if !rows.Next() {
 		t.Fatalf("expected one row, got err=%v", rows.Err())
@@ -145,11 +144,7 @@ func TestSQLiteQueryContextStaysAliveUntilRowsClosed(t *testing.T) {
 		t.Fatalf("unexpected value %q", value)
 	}
 
-	cancel()
-	if rows.Next() {
-		t.Fatalf("did not expect additional rows after cancel")
-	}
-	if err := rows.Err(); err != nil && !strings.Contains(err.Error(), "context canceled") {
-		t.Fatalf("expected context canceled or nil, got %v", err)
+	if err := cleanup(); err != nil && !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("expected cleanup to succeed, got %v", err)
 	}
 }

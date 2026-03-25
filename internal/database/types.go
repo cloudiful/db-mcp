@@ -13,8 +13,13 @@ type Connection interface {
 	Info() ConnectionInfo
 	ListSchemas(ctx context.Context, filter string, limit int) ([]SchemaInfo, error)
 	ListTables(ctx context.Context, schema, filter string, limit int) ([]TableInfo, error)
+	SearchColumns(ctx context.Context, schema, filter string, limit int) ([]ColumnMatchInfo, error)
+	ListForeignKeys(ctx context.Context, schema, table string, limit int) ([]ForeignKeyInfo, error)
+	ListIndexes(ctx context.Context, schema, table string, limit int) ([]IndexInfo, error)
+	GetTableComments(ctx context.Context, schema, table string) (*TableCommentInfo, error)
 	DescribeTable(ctx context.Context, schema, table string) ([]ColumnInfo, error)
 	ExecuteQuery(ctx context.Context, query string, maxRows int) (*QueryResult, error)
+	ExplainQuery(ctx context.Context, query string) (*ExplainResult, error)
 	Close() error
 }
 
@@ -44,6 +49,58 @@ type ColumnInfo struct {
 	Length    *int64 `json:"length,omitempty"`
 	Precision *int64 `json:"precision,omitempty"`
 	Scale     *int64 `json:"scale,omitempty"`
+}
+
+type ColumnMatchInfo struct {
+	Schema   string `json:"schema"`
+	Table    string `json:"table"`
+	Column   string `json:"column"`
+	DataType string `json:"dataType"`
+	Position int    `json:"position"`
+}
+
+type ForeignKeyInfo struct {
+	ConstraintName   string `json:"constraintName,omitempty"`
+	Schema           string `json:"schema"`
+	Table            string `json:"table"`
+	Column           string `json:"column"`
+	Position         int    `json:"position"`
+	ReferencedSchema string `json:"referencedSchema,omitempty"`
+	ReferencedTable  string `json:"referencedTable"`
+	ReferencedColumn string `json:"referencedColumn,omitempty"`
+	UpdateRule       string `json:"updateRule,omitempty"`
+	DeleteRule       string `json:"deleteRule,omitempty"`
+}
+
+type IndexInfo struct {
+	Schema     string   `json:"schema"`
+	Table      string   `json:"table"`
+	Name       string   `json:"name"`
+	Type       string   `json:"type,omitempty"`
+	Unique     bool     `json:"unique"`
+	Primary    bool     `json:"primary"`
+	Partial    bool     `json:"partial,omitempty"`
+	Columns    []string `json:"columns,omitempty"`
+	Definition string   `json:"definition,omitempty"`
+}
+
+type ColumnCommentInfo struct {
+	Name    string `json:"name"`
+	Comment string `json:"comment,omitempty"`
+}
+
+type TableCommentInfo struct {
+	Schema       string              `json:"schema"`
+	Table        string              `json:"table"`
+	TableComment string              `json:"tableComment,omitempty"`
+	Columns      []ColumnCommentInfo `json:"columns,omitempty"`
+	Notice       string              `json:"notice,omitempty"`
+}
+
+type ExplainResult struct {
+	Format    string   `json:"format"`
+	PlanLines []string `json:"planLines"`
+	Notice    string   `json:"notice,omitempty"`
 }
 
 type QueryColumn struct {

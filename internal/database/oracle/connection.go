@@ -87,12 +87,11 @@ FROM (
 )
 WHERE ROWNUM <= %d`, usernameFilter, limit)
 
-	rows, cancel, err := c.query(ctx, query, usernameArg)
+	rows, cleanup, err := c.query(ctx, query, usernameArg)
 	if err != nil {
 		return nil, fmt.Errorf("list oracle schemas: %w", err)
 	}
-	defer cancel()
-	defer rows.Close()
+	defer cleanup()
 
 	var results []database.SchemaInfo
 	for rows.Next() {
@@ -128,12 +127,11 @@ FROM (
 )
 WHERE ROWNUM <= %d`, ownerFilter, nameFilter, limit)
 
-	rows, cancel, err := c.query(ctx, query, ownerArg, nameArg)
+	rows, cleanup, err := c.query(ctx, query, ownerArg, nameArg)
 	if err != nil {
 		return nil, fmt.Errorf("list oracle tables for schema %q: %w", strings.ToUpper(schema), err)
 	}
-	defer cancel()
-	defer rows.Close()
+	defer cleanup()
 
 	var results []database.TableInfo
 	for rows.Next() {
@@ -149,6 +147,256 @@ WHERE ROWNUM <= %d`, ownerFilter, nameFilter, limit)
 	return results, nil
 }
 
+func (c *connection) SearchColumns(ctx context.Context, schema, filter string, limit int) ([]database.ColumnMatchInfo, error) {
+	limit = c.limits.NormalizeListLimit(limit)
+	if schema == "" {
+		schema = c.defaultSchema
+	}
+	ownerFilter, ownerArg := optionalEqPredicate("owner", 1, schema)
+	columnFilter, columnArg := optionalLikePredicate("column_name", 2, filter)
+	query := fmt.Sprintf(`
+SELECT owner, table_name, column_name, data_type, column_id
+FROM (
+  SELECT owner, table_name, column_name, data_type, column_id
+  FROM all_tab_columns
+  WHERE %s
+    AND %s
+  ORDER BY owner, table_name, column_id
+)
+WHERE ROWNUM <= %d`, ownerFilter, columnFilter, limit)
+
+	rows, cleanup, err := c.query(ctx, query, ownerArg, columnArg)
+	if err != nil {
+		return nil, fmt.Errorf("search oracle columns for schema %q: %w", strings.ToUpper(schema), err)
+	}
+	defer cleanup()
+
+	var results []database.ColumnMatchInfo
+	for rows.Next() {
+		var item database.ColumnMatchInfo
+		if err := rows.Scan(&item.Schema, &item.Table, &item.Column, &item.DataType, &item.Position); err != nil {
+			return nil, fmt.Errorf("scan oracle column match row: %w", err)
+		}
+		results = append(results, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate oracle column matches: %w", err)
+	}
+	return results, nil
+}
+
+func (c *connection) ListForeignKeys(ctx context.Context, schema, table string, limit int) ([]database.ForeignKeyInfo, error) {
+	limit = c.limits.NormalizeListLimit(limit)
+	if schema == "" {
+		schema = c.defaultSchema
+	}
+	ownerFilter, ownerArg := optionalEqPredicate("fk.owner", 1, schema)
+	tableFilter, tableArg := optionalEqPredicate("fk.table_name", 2, table)
+	query := fmt.Sprintf(`
+SELECT fk.constraint_name,
+       fk.owner,
+       fk.table_name,
+       fkc.column_name,
+       fkc.position,
+       pk.owner AS referenced_owner,
+       pk.table_name AS referenced_table_name,
+       pkc.column_name AS referenced_column_name,
+       'NO ACTION' AS update_rule,
+       fk.delete_rule
+FROM (
+  SELECT constraint_name, owner, table_name, r_owner, r_constraint_name, delete_rule
+  FROM all_constraints
+  WHERE constraint_type = 'R'
+    AND %s
+    AND %s
+) fk
+JOIN all_cons_columns fkc
+  ON fkc.owner = fk.owner
+ AND fkc.constraint_name = fk.constraint_name
+JOIN all_constraints pk
+  ON pk.owner = fk.r_owner
+ AND pk.constraint_name = fk.r_constraint_name
+JOIN all_cons_columns pkc
+  ON pkc.owner = pk.owner
+ AND pkc.constraint_name = pk.constraint_name
+ AND pkc.position = fkc.position
+ORDER BY fk.owner, fk.table_name, fk.constraint_name, fkc.position`, ownerFilter, tableFilter)
+
+	rows, cleanup, err := c.query(ctx, query, ownerArg, tableArg)
+	if err != nil {
+		return nil, fmt.Errorf("list oracle foreign keys for schema %q table %q: %w", strings.ToUpper(schema), strings.ToUpper(table), err)
+	}
+	defer cleanup()
+
+	results := make([]database.ForeignKeyInfo, 0, limit)
+	for rows.Next() {
+		var item database.ForeignKeyInfo
+		if err := rows.Scan(
+			&item.ConstraintName,
+			&item.Schema,
+			&item.Table,
+			&item.Column,
+			&item.Position,
+			&item.ReferencedSchema,
+			&item.ReferencedTable,
+			&item.ReferencedColumn,
+			&item.UpdateRule,
+			&item.DeleteRule,
+		); err != nil {
+			return nil, fmt.Errorf("scan oracle foreign key row: %w", err)
+		}
+		results = append(results, item)
+		if len(results) >= limit {
+			return results, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate oracle foreign keys: %w", err)
+	}
+	return results, nil
+}
+
+func (c *connection) ListIndexes(ctx context.Context, schema, table string, limit int) ([]database.IndexInfo, error) {
+	limit = c.limits.NormalizeListLimit(limit)
+	if schema == "" {
+		schema = c.defaultSchema
+	}
+	ownerFilter, ownerArg := optionalEqPredicate("ai.table_owner", 1, schema)
+	tableFilter, tableArg := optionalEqPredicate("ai.table_name", 2, table)
+	query := fmt.Sprintf(`
+SELECT ai.table_owner,
+       ai.table_name,
+       ai.index_name,
+       ai.index_type,
+       ai.uniqueness,
+       CASE WHEN pk.index_name IS NULL THEN 0 ELSE 1 END AS is_primary,
+       aic.column_position,
+       aic.column_name
+FROM all_indexes ai
+JOIN all_ind_columns aic
+  ON aic.index_owner = ai.owner
+ AND aic.index_name = ai.index_name
+LEFT JOIN (
+  SELECT owner, table_name, index_name
+  FROM all_constraints
+  WHERE constraint_type = 'P'
+) pk
+  ON pk.owner = ai.table_owner
+ AND pk.table_name = ai.table_name
+ AND pk.index_name = ai.index_name
+WHERE %s
+  AND %s
+ORDER BY ai.table_owner, ai.table_name, ai.index_name, aic.column_position`, ownerFilter, tableFilter)
+
+	rows, cleanup, err := c.query(ctx, query, ownerArg, tableArg)
+	if err != nil {
+		return nil, fmt.Errorf("list oracle indexes for schema %q table %q: %w", strings.ToUpper(schema), strings.ToUpper(table), err)
+	}
+	defer cleanup()
+
+	var (
+		results []database.IndexInfo
+		current *database.IndexInfo
+		lastKey string
+	)
+	for rows.Next() {
+		var (
+			item         database.IndexInfo
+			uniqueness   string
+			isPrimaryNum int
+			position     int
+			columnName   string
+		)
+		if err := rows.Scan(
+			&item.Schema,
+			&item.Table,
+			&item.Name,
+			&item.Type,
+			&uniqueness,
+			&isPrimaryNum,
+			&position,
+			&columnName,
+		); err != nil {
+			return nil, fmt.Errorf("scan oracle index row: %w", err)
+		}
+		_ = position
+		item.Unique = strings.EqualFold(uniqueness, "UNIQUE")
+		item.Primary = isPrimaryNum == 1
+		key := item.Schema + "." + item.Table + "." + item.Name
+		if key != lastKey {
+			if len(results) >= limit {
+				return results, nil
+			}
+			results = append(results, item)
+			current = &results[len(results)-1]
+			lastKey = key
+		}
+		if current != nil && columnName != "" {
+			current.Columns = append(current.Columns, columnName)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate oracle indexes: %w", err)
+	}
+	return results, nil
+}
+
+func (c *connection) GetTableComments(ctx context.Context, schema, table string) (*database.TableCommentInfo, error) {
+	if strings.TrimSpace(table) == "" {
+		return nil, fmt.Errorf("table is required")
+	}
+	if schema == "" {
+		schema = c.defaultSchema
+	}
+	schema = strings.ToUpper(schema)
+	table = strings.ToUpper(strings.TrimSpace(table))
+
+	rows, cleanup, err := c.query(ctx, `
+SELECT NVL(comments, '')
+FROM all_tab_comments
+WHERE owner = :1 AND table_name = :2`, schema, table)
+	if err != nil {
+		return nil, fmt.Errorf("get oracle table comment for %s.%s: %w", schema, table, err)
+	}
+	result := &database.TableCommentInfo{Schema: schema, Table: table}
+	if !rows.Next() {
+		cleanup()
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("iterate oracle table comments: %w", err)
+		}
+		return nil, fmt.Errorf("table %s.%s not found or not visible", schema, table)
+	}
+	if err := rows.Scan(&result.TableComment); err != nil {
+		cleanup()
+		return nil, fmt.Errorf("scan oracle table comment: %w", err)
+	}
+	if err := cleanup(); err != nil {
+		return nil, err
+	}
+
+	rows, cleanup, err = c.query(ctx, `
+SELECT column_name, NVL(comments, '')
+FROM all_col_comments
+WHERE owner = :1 AND table_name = :2
+ORDER BY column_name`, schema, table)
+	if err != nil {
+		return nil, fmt.Errorf("get oracle column comments for %s.%s: %w", schema, table, err)
+	}
+	defer cleanup()
+
+	for rows.Next() {
+		var item database.ColumnCommentInfo
+		if err := rows.Scan(&item.Name, &item.Comment); err != nil {
+			return nil, fmt.Errorf("scan oracle column comment row: %w", err)
+		}
+		result.Columns = append(result.Columns, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate oracle column comments: %w", err)
+	}
+	return result, nil
+}
+
 func (c *connection) DescribeTable(ctx context.Context, schema, table string) ([]database.ColumnInfo, error) {
 	if table == "" {
 		return nil, fmt.Errorf("table is required")
@@ -157,7 +405,7 @@ func (c *connection) DescribeTable(ctx context.Context, schema, table string) ([
 		schema = c.defaultSchema
 	}
 
-	rows, cancel, err := c.query(ctx, `
+	rows, cleanup, err := c.query(ctx, `
 SELECT column_id, column_name, data_type, data_length, data_precision, data_scale, nullable
 FROM all_tab_columns
 WHERE owner = :1 AND table_name = :2
@@ -165,8 +413,7 @@ ORDER BY column_id`, strings.ToUpper(schema), strings.ToUpper(table))
 	if err != nil {
 		return nil, fmt.Errorf("describe oracle table %s.%s: %w", strings.ToUpper(schema), strings.ToUpper(table), err)
 	}
-	defer cancel()
-	defer rows.Close()
+	defer cleanup()
 
 	var results []database.ColumnInfo
 	for rows.Next() {
@@ -202,26 +449,54 @@ func (c *connection) ExecuteQuery(ctx context.Context, query string, maxRows int
 	}
 	appliedMaxRows := c.limits.NormalizeMaxRows(maxRows)
 	startedAt := time.Now()
-	rows, cancel, err := c.query(ctx, normalized)
+	rows, cleanup, err := c.query(ctx, normalized)
 	if err != nil {
 		return nil, fmt.Errorf("execute oracle query: %w", err)
 	}
-	defer cancel()
-	return database.CollectRows(rows, appliedMaxRows, c.limits, startedAt)
+	result, err := database.CollectRows(rows, appliedMaxRows, c.limits, startedAt)
+	if cleanupErr := cleanup(); err == nil && cleanupErr != nil {
+		err = cleanupErr
+	}
+	return result, err
+}
+
+func (c *connection) ExplainQuery(context.Context, string) (*database.ExplainResult, error) {
+	return nil, fmt.Errorf("oracle explain is not supported because EXPLAIN PLAN requires writable plan tables; this server keeps Oracle access strictly read-only")
 }
 
 func (c *connection) Close() error {
 	return c.db.Close()
 }
 
-func (c *connection) query(ctx context.Context, query string, args ...any) (*sql.Rows, context.CancelFunc, error) {
+func (c *connection) query(ctx context.Context, query string, args ...any) (*sql.Rows, func() error, error) {
 	queryCtx, cancel := c.limits.WithTimeout(ctx)
-	rows, err := c.db.QueryContext(queryCtx, query, args...)
+	tx, err := c.db.BeginTx(queryCtx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		cancel()
 		return nil, nil, err
 	}
-	return rows, cancel, nil
+	if _, err := tx.ExecContext(queryCtx, "SET TRANSACTION READ ONLY"); err != nil {
+		_ = tx.Rollback()
+		cancel()
+		return nil, nil, err
+	}
+	rows, err := tx.QueryContext(queryCtx, query, args...)
+	if err != nil {
+		_ = tx.Rollback()
+		cancel()
+		return nil, nil, err
+	}
+	return rows, func() error {
+		var firstErr error
+		if err := rows.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		if err := tx.Rollback(); err != nil && err != sql.ErrTxDone && firstErr == nil {
+			firstErr = err
+		}
+		cancel()
+		return firstErr
+	}, nil
 }
 
 func nullableUpper(value string) any {
