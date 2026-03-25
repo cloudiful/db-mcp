@@ -81,12 +81,12 @@ SELECT username
 FROM (
   SELECT username
   FROM all_users
-  WHERE (:1 IS NULL OR username LIKE '%%' || :1 || '%%')
+  WHERE username LIKE NVL(:1, username)
   ORDER BY username
 )
 WHERE ROWNUM <= %d`, limit)
 
-	rows, err := c.query(ctx, query, nullableUpper(filter))
+	rows, err := c.query(ctx, query, nullableLike(filter))
 	if err != nil {
 		return nil, err
 	}
@@ -115,13 +115,13 @@ FROM (
   FROM all_objects
   WHERE object_type IN ('TABLE', 'VIEW')
     AND generated = 'N'
-    AND (:1 IS NULL OR owner = :1)
-    AND (:2 IS NULL OR object_name LIKE '%%' || :2 || '%%')
+    AND owner = NVL(:1, owner)
+    AND object_name LIKE NVL(:2, object_name)
   ORDER BY owner, object_type, object_name
 )
 WHERE ROWNUM <= %d`, limit)
 
-	rows, err := c.query(ctx, query, nullableUpper(schema), nullableUpper(filter))
+	rows, err := c.query(ctx, query, nullableUpper(schema), nullableLike(filter))
 	if err != nil {
 		return nil, err
 	}
@@ -210,6 +210,14 @@ func nullableUpper(value string) any {
 		return nil
 	}
 	return strings.ToUpper(value)
+}
+
+func nullableLike(value string) any {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	return "%" + strings.ToUpper(value) + "%"
 }
 
 func toPtr(value sql.NullInt64) *int64 {

@@ -49,3 +49,42 @@ func TestOracleIntegrationListSchemas(t *testing.T) {
 		t.Fatalf("expected at least one schema")
 	}
 }
+
+func TestOracleIntegrationListTables(t *testing.T) {
+	jdbcURL := os.Getenv("DBMCP_TEST_ORACLE_JDBC_URL")
+	username := os.Getenv("DBMCP_TEST_ORACLE_USERNAME")
+	password := os.Getenv("DBMCP_TEST_ORACLE_PASSWORD")
+	if jdbcURL == "" || username == "" || password == "" {
+		t.Skip("integration credentials are not set")
+	}
+
+	conn, err := openConnection(context.Background(), config.ConnectionConfig{
+		Name:   "oracle-test",
+		Driver: "oracle",
+		Oracle: &config.OracleConfig{
+			JDBCURL:  jdbcURL,
+			Username: username,
+			Password: password,
+		},
+	}, database.Limits{
+		DefaultMaxRows: 10,
+		HardMaxRows:    20,
+		MaxColumns:     20,
+		MaxCellChars:   256,
+		MaxTotalChars:  2048,
+		QueryTimeout:   10 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("open oracle connection: %v", err)
+	}
+	defer conn.Close()
+
+	schema := os.Getenv("DBMCP_TEST_ORACLE_SCHEMA")
+	if schema == "" {
+		schema = username
+	}
+
+	if _, err := conn.ListTables(context.Background(), schema, "", 5); err != nil {
+		t.Fatalf("list tables: %v", err)
+	}
+}
