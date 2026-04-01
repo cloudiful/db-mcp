@@ -12,3 +12,11 @@ func TestFilterHelpers(t *testing.T) {
 		t.Fatalf("unexpected likeFilter result: %q", got)
 	}
 }
+
+func TestQuoteIdentifier(t *testing.T) {
+	t.Parallel()
+
+	if got := quoteIdentifier(`research"`); got != `"research"""` {
+		t.Fatalf("unexpected quoted identifier: %q", got)
+	}
+}

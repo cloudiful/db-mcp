@@ -45,6 +45,13 @@ func openConnection(ctx context.Context, cfg config.ConnectionConfig, limits dat
 		_ = db.Close()
 		return nil, err
 	}
+	if strings.TrimSpace(cfg.Postgres.Schema) != "" {
+		defaultSchema = strings.TrimSpace(cfg.Postgres.Schema)
+		if err := ensureSchemaVisible(pingCtx, db, defaultSchema); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+	}
 
 	return &connection{
 		name:          cfg.Name,
@@ -63,6 +70,22 @@ func fetchDefaultSchema(ctx context.Context, db *sql.DB) (string, error) {
 		schema = "public"
 	}
 	return schema, nil
+}
+
+func ensureSchemaVisible(ctx context.Context, db *sql.DB, schema string) error {
+	var exists bool
+	if err := db.QueryRowContext(ctx, `
+SELECT EXISTS (
+  SELECT 1
+  FROM information_schema.schemata
+  WHERE schema_name = $1
+)`, schema).Scan(&exists); err != nil {
+		return fmt.Errorf("check postgres schema %q: %w", schema, err)
+	}
+	if !exists {
+		return fmt.Errorf("postgres schema %q not found or not visible", schema)
+	}
+	return nil
 }
 
 func (c *connection) Info() database.ConnectionInfo {
@@ -468,6 +491,11 @@ func (c *connection) query(ctx context.Context, query string, args ...any) (*sql
 		cancel()
 		return nil, nil, err
 	}
+	if err := setLocalSearchPath(queryCtx, tx, c.defaultSchema); err != nil {
+		_ = tx.Rollback()
+		cancel()
+		return nil, nil, err
+	}
 	rows, err := tx.QueryContext(queryCtx, query, args...)
 	if err != nil {
 		_ = tx.Rollback()
@@ -485,6 +513,22 @@ func (c *connection) query(ctx context.Context, query string, args ...any) (*sql
 		cancel()
 		return firstErr
 	}, nil
+}
+
+func setLocalSearchPath(ctx context.Context, tx *sql.Tx, schema string) error {
+	schema = strings.TrimSpace(schema)
+	if schema == "" {
+		return nil
+	}
+
+	searchPath := quoteIdentifier(schema)
+	if !strings.EqualFold(schema, "public") {
+		searchPath += ", public"
+	}
+	if _, err := tx.ExecContext(ctx, "SET LOCAL search_path TO "+searchPath); err != nil {
+		return fmt.Errorf("set postgres search_path: %w", err)
+	}
+	return nil
 }
 
 func exactFilter(value string) string {
@@ -516,6 +560,10 @@ func splitCSV(value string) []string {
 		}
 	}
 	return result
+}
+
+func quoteIdentifier(value string) string {
+	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
 }
 
 func toPtr(value sql.NullInt64) *int64 {

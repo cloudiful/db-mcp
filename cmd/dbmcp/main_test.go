@@ -59,10 +59,11 @@ func TestConnectionTargetSummaryUsesRedactedPostgresDSN(t *testing.T) {
 	got := connectionTargetSummary(config.ConnectionConfig{
 		Driver: "postgres",
 		Postgres: &config.PostgresConfig{
-			DSN: "postgres://reader:secret@localhost:5432/app?sslmode=disable",
+			DSN:    "postgres://reader:secret@localhost:5432/app?sslmode=disable",
+			Schema: "research",
 		},
 	})
-	want := "postgres://reader@localhost:5432/app?sslmode=disable"
+	want := "postgres://reader@localhost:5432/app?sslmode=disable schema=research"
 	if got != want {
 		t.Fatalf("unexpected postgres target summary: %q", got)
 	}

@@ -59,7 +59,8 @@ type OracleConfig struct {
 }
 
 type PostgresConfig struct {
-	DSN string `json:"dsn"`
+	DSN    string `json:"dsn"`
+	Schema string `json:"schema,omitempty"`
 }
 
 type SQLiteConfig struct {
@@ -78,11 +79,15 @@ func Load(path string) (*Config, error) {
 			return nil, fmt.Errorf("parse config: %w", err)
 		}
 	} else {
-		loadEnv(cfg)
+		loadEnvSettings(cfg)
 	}
 
+	loadEnvSettings(cfg)
+	envConnections := loadEnvConnections()
 	if len(cfg.Connections) == 0 {
-		loadEnv(cfg)
+		cfg.Connections = envConnections
+	} else if len(envConnections) > 0 {
+		cfg.Connections = mergeConnections(cfg.Connections, envConnections)
 	}
 	return cfg, nil
 }
@@ -163,6 +168,7 @@ func (c *Config) Validate() error {
 			if conn.Postgres.DSN == "" {
 				return fmt.Errorf("connections[%d].postgres requires dsn", i)
 			}
+			conn.Postgres.Schema = strings.TrimSpace(conn.Postgres.Schema)
 		case "sqlite":
 			if conn.SQLite == nil {
 				return fmt.Errorf("connections[%d].sqlite is required", i)
@@ -203,7 +209,7 @@ func defaultConfig() *Config {
 	}
 }
 
-func loadEnv(cfg *Config) {
+func loadEnvSettings(cfg *Config) {
 	if value := os.Getenv("DBMCP_NAME"); value != "" {
 		cfg.Server.Name = value
 	}
@@ -227,6 +233,9 @@ func loadEnv(cfg *Config) {
 	if value := os.Getenv("DBMCP_QUERY_TIMEOUT"); value != "" {
 		cfg.Limits.QueryTimeout = value
 	}
+}
+
+func loadEnvConnections() []ConnectionConfig {
 	var connections []ConnectionConfig
 	if value := os.Getenv("DBMCP_ORACLE_JDBC_URL"); value != "" {
 		connections = append(connections, ConnectionConfig{
@@ -244,7 +253,8 @@ func loadEnv(cfg *Config) {
 			Name:   envOr("DBMCP_POSTGRES_NAME", "postgres"),
 			Driver: "postgres",
 			Postgres: &PostgresConfig{
-				DSN: value,
+				DSN:    value,
+				Schema: os.Getenv("DBMCP_POSTGRES_SCHEMA"),
 			},
 		})
 	}
@@ -258,8 +268,35 @@ func loadEnv(cfg *Config) {
 		})
 	}
 	if len(connections) > 0 {
-		cfg.Connections = connections
+		return connections
 	}
+	return nil
+}
+
+func mergeConnections(base, overrides []ConnectionConfig) []ConnectionConfig {
+	merged := append([]ConnectionConfig(nil), base...)
+	indexByName := make(map[string]int, len(merged))
+	for i, conn := range merged {
+		indexByName[effectiveConnectionName(conn, i)] = i
+	}
+
+	for _, conn := range overrides {
+		name := effectiveConnectionName(conn, len(merged))
+		if idx, ok := indexByName[name]; ok {
+			merged[idx] = conn
+			continue
+		}
+		indexByName[name] = len(merged)
+		merged = append(merged, conn)
+	}
+	return merged
+}
+
+func effectiveConnectionName(conn ConnectionConfig, index int) string {
+	if strings.TrimSpace(conn.Name) != "" {
+		return conn.Name
+	}
+	return defaultConnectionName(conn.Driver, index)
 }
 
 func envOr(key, fallback string) string {

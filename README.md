@@ -32,6 +32,7 @@ export DBMCP_ORACLE_JDBC_URL='jdbc:oracle:thin:@unraid.cloud1ful.com:1521:XE'
 export DBMCP_ORACLE_USERNAME=readuser
 export DBMCP_ORACLE_PASSWORD=readuser
 export DBMCP_POSTGRES_DSN='postgres://reader:reader@localhost:5432/app?sslmode=disable'
+export DBMCP_POSTGRES_SCHEMA='research'
 export DBMCP_SQLITE_DSN='file:./app.db?mode=ro'
 go run ./cmd/dbmcp
 ```
@@ -40,10 +41,12 @@ Supported environment variables for connections:
 
 - `DBMCP_DEBUG` enables extra startup diagnostics
 - `DBMCP_ORACLE_JDBC_URL`, `DBMCP_ORACLE_USERNAME`, `DBMCP_ORACLE_PASSWORD`, optional `DBMCP_ORACLE_NAME`
-- `DBMCP_POSTGRES_DSN`, optional `DBMCP_POSTGRES_NAME`
+- `DBMCP_POSTGRES_DSN`, optional `DBMCP_POSTGRES_NAME`, optional `DBMCP_POSTGRES_SCHEMA`
 - `DBMCP_SQLITE_DSN`, optional `DBMCP_SQLITE_NAME`
 - `DATABASE_URL` is also accepted as the PostgreSQL DSN fallback
 - `SQLITE_URL` is also accepted as the SQLite DSN fallback
+
+When `-config` is used, connection settings from the environment are now merged with the file instead of being ignored. If an environment connection has the same connection name, it replaces the file entry.
 
 For HTTP mode:
 

@@ -166,7 +166,11 @@ func connectionTargetSummary(conn config.ConnectionConfig) string {
 		if conn.Postgres == nil || strings.TrimSpace(conn.Postgres.DSN) == "" {
 			return "postgres:<missing-dsn>"
 		}
-		return redactPostgresDSN(conn.Postgres.DSN)
+		target := redactPostgresDSN(conn.Postgres.DSN)
+		if schema := strings.TrimSpace(conn.Postgres.Schema); schema != "" {
+			target += " schema=" + schema
+		}
+		return target
 	case "sqlite":
 		if conn.SQLite == nil || strings.TrimSpace(conn.SQLite.DSN) == "" {
 			return "sqlite:<missing-dsn>"
