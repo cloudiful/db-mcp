@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -28,6 +29,7 @@ type Config struct {
 type ServerConfig struct {
 	Name      string        `json:"name"`
 	Version   string        `json:"version"`
+	Debug     bool          `json:"debug,omitempty"`
 	Transport TransportMode `json:"transport"`
 	HTTPAddr  string        `json:"httpAddr"`
 	HTTPPath  string        `json:"httpPath"`
@@ -207,6 +209,11 @@ func loadEnv(cfg *Config) {
 	}
 	if value := os.Getenv("DBMCP_VERSION"); value != "" {
 		cfg.Server.Version = value
+	}
+	if value := os.Getenv("DBMCP_DEBUG"); value != "" {
+		if debug, err := strconv.ParseBool(value); err == nil {
+			cfg.Server.Debug = debug
+		}
 	}
 	if value := os.Getenv("DBMCP_TRANSPORT"); value != "" {
 		cfg.Server.Transport = TransportMode(value)

@@ -7,8 +7,11 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -28,12 +31,14 @@ func main() {
 		modeFlag   string
 		httpAddr   string
 		httpPath   string
+		debugFlag  string
 	)
 
 	flag.StringVar(&configPath, "config", "", "path to JSON config file; falls back to environment variables")
 	flag.StringVar(&modeFlag, "transport", "", "transport override: stdio, http, or both")
 	flag.StringVar(&httpAddr, "http-addr", "", "HTTP listen address override")
 	flag.StringVar(&httpPath, "http-path", "", "HTTP path override")
+	flag.StringVar(&debugFlag, "debug", "", "debug logging override: true or false")
 	flag.Parse()
 
 	cfg, err := config.Load(configPath)
@@ -49,12 +54,21 @@ func main() {
 	if httpPath != "" {
 		cfg.Server.HTTPPath = httpPath
 	}
+	if debugFlag != "" {
+		debug, err := strconv.ParseBool(debugFlag)
+		if err != nil {
+			log.Fatalf("parse -debug: %v", err)
+		}
+		cfg.Server.Debug = debug
+	}
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("validate config: %v", err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	logStartupPlan(cfg, configPath)
 
 	manager, err := database.NewManager(ctx, cfg)
 	if err != nil {
@@ -72,7 +86,6 @@ func main() {
 }
 
 func logStartup(cfg *config.Config, manager *database.Manager) {
-	log.Printf("db-mcp starting: transport=%s", cfg.Server.Transport)
 	for _, info := range manager.ConnectionInfos() {
 		log.Printf(
 			"database connected: name=%s driver=%s default_schema=%s status=ok",
@@ -90,6 +103,31 @@ func logStartup(cfg *config.Config, manager *database.Manager) {
 		log.Printf("stdio MCP enabled")
 	case config.TransportStdio:
 		log.Printf("stdio MCP enabled")
+	}
+}
+
+func logStartupPlan(cfg *config.Config, configPath string) {
+	log.Printf("db-mcp starting: transport=%s debug=%t", cfg.Server.Transport, cfg.Server.Debug)
+	if cfg.Server.Debug {
+		source := "environment"
+		if strings.TrimSpace(configPath) != "" {
+			source = "file"
+		}
+		log.Printf(
+			"db-mcp config: source=%s config_path=%s connection_count=%d",
+			source,
+			configPathOrDefault(configPath),
+			len(cfg.Connections),
+		)
+	}
+
+	for _, conn := range cfg.Connections {
+		log.Printf(
+			"database connecting: name=%s driver=%s target=%s",
+			conn.Name,
+			conn.Driver,
+			connectionTargetSummary(conn),
+		)
 	}
 }
 
@@ -115,6 +153,66 @@ func splitListenAddr(addr string) (string, string) {
 		return host, port
 	}
 	return addr, ""
+}
+
+func connectionTargetSummary(conn config.ConnectionConfig) string {
+	switch conn.Driver {
+	case "oracle":
+		if conn.Oracle == nil || strings.TrimSpace(conn.Oracle.JDBCURL) == "" {
+			return "oracle:<missing-jdbc-url>"
+		}
+		return conn.Oracle.JDBCURL
+	case "postgres":
+		if conn.Postgres == nil || strings.TrimSpace(conn.Postgres.DSN) == "" {
+			return "postgres:<missing-dsn>"
+		}
+		return redactPostgresDSN(conn.Postgres.DSN)
+	case "sqlite":
+		if conn.SQLite == nil || strings.TrimSpace(conn.SQLite.DSN) == "" {
+			return "sqlite:<missing-dsn>"
+		}
+		return conn.SQLite.DSN
+	default:
+		return "<unknown>"
+	}
+}
+
+func redactPostgresDSN(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "postgres:<empty>"
+	}
+
+	if strings.Contains(raw, "://") {
+		u, err := url.Parse(raw)
+		if err == nil {
+			if u.User != nil {
+				username := u.User.Username()
+				if username != "" {
+					u.User = url.User(username)
+				} else {
+					u.User = nil
+				}
+			}
+			return u.String()
+		}
+	}
+
+	parts := strings.Fields(raw)
+	for i, part := range parts {
+		lower := strings.ToLower(part)
+		if strings.HasPrefix(lower, "password=") {
+			parts[i] = "password=REDACTED"
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+func configPathOrDefault(path string) string {
+	if strings.TrimSpace(path) == "" {
+		return "<env>"
+	}
+	return path
 }
 
 func run(ctx context.Context, cfg *config.Config, server *mcp.Server) error {

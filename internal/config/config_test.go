@@ -69,3 +69,16 @@ func TestValidateAssignsDefaultSQLiteConnectionName(t *testing.T) {
 		t.Fatalf("expected default connection name sqlite, got %q", cfg.Connections[0].Name)
 	}
 }
+
+func TestLoadReadsDebugFromEnv(t *testing.T) {
+	t.Setenv("DBMCP_DEBUG", "true")
+	t.Setenv("DBMCP_POSTGRES_DSN", "postgres://reader:reader@localhost:5432/app?sslmode=disable")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if !cfg.Server.Debug {
+		t.Fatal("expected debug to be enabled from env")
+	}
+}

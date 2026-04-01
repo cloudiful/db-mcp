@@ -27,6 +27,7 @@ Or use environment variables:
 
 ```bash
 export DBMCP_TRANSPORT=stdio
+export DBMCP_DEBUG=true
 export DBMCP_ORACLE_JDBC_URL='jdbc:oracle:thin:@unraid.cloud1ful.com:1521:XE'
 export DBMCP_ORACLE_USERNAME=readuser
 export DBMCP_ORACLE_PASSWORD=readuser
@@ -37,6 +38,7 @@ go run ./cmd/dbmcp
 
 Supported environment variables for connections:
 
+- `DBMCP_DEBUG` enables extra startup diagnostics
 - `DBMCP_ORACLE_JDBC_URL`, `DBMCP_ORACLE_USERNAME`, `DBMCP_ORACLE_PASSWORD`, optional `DBMCP_ORACLE_NAME`
 - `DBMCP_POSTGRES_DSN`, optional `DBMCP_POSTGRES_NAME`
 - `DBMCP_SQLITE_DSN`, optional `DBMCP_SQLITE_NAME`
@@ -80,9 +82,16 @@ The container defaults to:
 
 On startup the server now logs:
 
+- each configured database connection before connect, including a redacted PostgreSQL target
 - enabled transport
 - HTTP host, port, and MCP path when HTTP is enabled
 - each configured database connection and whether it connected successfully
+
+You can also enable debug logging with:
+
+```bash
+go run ./cmd/dbmcp -debug=true
+```
 
 For SQLite, prefer a read-only DSN such as:
 
