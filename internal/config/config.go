@@ -116,10 +116,10 @@ func (c *Config) Validate() error {
 	}
 
 	if c.Limits.DefaultMaxRows <= 0 {
-		c.Limits.DefaultMaxRows = 50
+		c.Limits.DefaultMaxRows = 5
 	}
 	if c.Limits.HardMaxRows <= 0 {
-		c.Limits.HardMaxRows = 200
+		c.Limits.HardMaxRows = 20
 	}
 	if c.Limits.DefaultMaxRows > c.Limits.HardMaxRows {
 		c.Limits.DefaultMaxRows = c.Limits.HardMaxRows
@@ -131,7 +131,7 @@ func (c *Config) Validate() error {
 		c.Limits.MaxCellChars = 512
 	}
 	if c.Limits.MaxTotalChars <= 0 {
-		c.Limits.MaxTotalChars = 12000
+		c.Limits.MaxTotalChars = 1000
 	}
 	if c.Limits.QueryTimeout == "" {
 		c.Limits.QueryTimeout = "15s"
@@ -199,11 +199,11 @@ func defaultConfig() *Config {
 			HTTPPath:  "/mcp",
 		},
 		Limits: LimitsConfig{
-			DefaultMaxRows: 50,
-			HardMaxRows:    200,
+			DefaultMaxRows: 5,
+			HardMaxRows:    20,
 			MaxColumns:     40,
 			MaxCellChars:   512,
-			MaxTotalChars:  12000,
+			MaxTotalChars:  1000,
 			QueryTimeout:   "15s",
 		},
 	}

@@ -89,6 +89,7 @@ type describeTableOutput struct {
 	Schema     string                `json:"schema"`
 	Table      string                `json:"table"`
 	Columns    []database.ColumnInfo `json:"columns"`
+	Notice     string                `json:"notice,omitempty"`
 }
 
 type searchColumnsOutput struct {
@@ -99,11 +100,13 @@ type searchColumnsOutput struct {
 type listForeignKeysOutput struct {
 	Connection  string                    `json:"connection"`
 	ForeignKeys []database.ForeignKeyInfo `json:"foreignKeys"`
+	Notice      string                    `json:"notice,omitempty"`
 }
 
 type listIndexesOutput struct {
 	Connection string               `json:"connection"`
 	Indexes    []database.IndexInfo `json:"indexes"`
+	Notice     string               `json:"notice,omitempty"`
 }
 
 type getTableCommentsOutput struct {
@@ -129,6 +132,7 @@ type tableResourceOutput struct {
 	ForeignKeys []database.ForeignKeyInfo  `json:"foreignKeys"`
 	Indexes     []database.IndexInfo       `json:"indexes"`
 	Comments    *database.TableCommentInfo `json:"comments"`
+	Notice      string                     `json:"notice,omitempty"`
 }
 
 func New(cfg *config.Config, manager *database.Manager) *mcp.Server {
@@ -308,11 +312,17 @@ func (s *service) listForeignKeys(ctx context.Context, _ *mcp.CallToolRequest, i
 	if err != nil {
 		return errorResult(err), nil, nil
 	}
+	foreignKeys, truncated := database.CompactForeignKeys(foreignKeys, s.manager.Limits().HardMaxRows, s.manager.Limits().MaxTotalChars)
 	output := &listForeignKeysOutput{
 		Connection:  conn.Info().Name,
 		ForeignKeys: foreignKeys,
 	}
-	return textResult(fmt.Sprintf("Returned %d foreign key row(s) from %s.", len(foreignKeys), conn.Info().Name)), output, nil
+	text := fmt.Sprintf("Returned %d foreign key row(s) from %s.", len(foreignKeys), conn.Info().Name)
+	if truncated {
+		output.Notice = database.MetadataNotice()
+		text += " " + output.Notice
+	}
+	return textResult(text), output, nil
 }
 
 func (s *service) listIndexes(ctx context.Context, _ *mcp.CallToolRequest, input listIndexesInput) (*mcp.CallToolResult, *listIndexesOutput, error) {
@@ -328,11 +338,17 @@ func (s *service) listIndexes(ctx context.Context, _ *mcp.CallToolRequest, input
 	if err != nil {
 		return errorResult(err), nil, nil
 	}
+	indexes, truncated := database.CompactIndexes(indexes, s.manager.Limits().HardMaxRows, s.manager.Limits().MaxTotalChars, s.manager.Limits().MaxCellChars)
 	output := &listIndexesOutput{
 		Connection: conn.Info().Name,
 		Indexes:    indexes,
 	}
-	return textResult(fmt.Sprintf("Returned %d index row(s) from %s.", len(indexes), conn.Info().Name)), output, nil
+	text := fmt.Sprintf("Returned %d index row(s) from %s.", len(indexes), conn.Info().Name)
+	if truncated {
+		output.Notice = database.MetadataNotice()
+		text += " " + output.Notice
+	}
+	return textResult(text), output, nil
 }
 
 func (s *service) getTableComments(ctx context.Context, _ *mcp.CallToolRequest, input getTableCommentsInput) (*mcp.CallToolResult, *getTableCommentsOutput, error) {
@@ -348,11 +364,16 @@ func (s *service) getTableComments(ctx context.Context, _ *mcp.CallToolRequest, 
 	if err != nil {
 		return errorResult(err), nil, nil
 	}
+	comments, truncated := database.CompactTableComments(comments, s.manager.Limits().HardMaxRows, s.manager.Limits().MaxTotalChars, s.manager.Limits().MaxCellChars)
 	output := &getTableCommentsOutput{
 		Connection: conn.Info().Name,
 		Comments:   comments,
 	}
-	return textResult(fmt.Sprintf("Loaded comments for %s.%s from %s.", comments.Schema, comments.Table, conn.Info().Name)), output, nil
+	text := fmt.Sprintf("Loaded comments for %s.%s from %s.", comments.Schema, comments.Table, conn.Info().Name)
+	if truncated {
+		text += " " + database.MetadataNotice()
+	}
+	return textResult(text), output, nil
 }
 
 func (s *service) describeTable(ctx context.Context, _ *mcp.CallToolRequest, input describeTableInput) (*mcp.CallToolResult, *describeTableOutput, error) {
@@ -368,13 +389,19 @@ func (s *service) describeTable(ctx context.Context, _ *mcp.CallToolRequest, inp
 	if err != nil {
 		return errorResult(err), nil, nil
 	}
+	columns, truncated := database.CompactColumns(columns, s.manager.Limits().HardMaxRows, s.manager.Limits().MaxTotalChars)
 	output := &describeTableOutput{
 		Connection: conn.Info().Name,
 		Schema:     schema,
 		Table:      input.Table,
 		Columns:    columns,
 	}
-	return textResult(fmt.Sprintf("Described %s.%s with %d column(s).", output.Schema, output.Table, len(columns))), output, nil
+	text := fmt.Sprintf("Described %s.%s with %d column(s).", output.Schema, output.Table, len(columns))
+	if truncated {
+		output.Notice = database.MetadataNotice()
+		text += " " + output.Notice
+	}
+	return textResult(text), output, nil
 }
 
 func (s *service) executeQuery(ctx context.Context, _ *mcp.CallToolRequest, input executeQueryInput) (*mcp.CallToolResult, *executeQueryOutput, error) {
@@ -421,10 +448,10 @@ func (s *service) readConnectionsResource(_ context.Context, req *mcp.ReadResour
 	if req.Params.URI != "db://connections" {
 		return nil, mcp.ResourceNotFoundError(req.Params.URI)
 	}
-	body, err := json.MarshalIndent(&listConnectionsOutput{
+	body, err := json.Marshal(&listConnectionsOutput{
 		DefaultConnection: s.manager.DefaultConnectionName(),
 		Connections:       s.manager.ConnectionInfos(),
-	}, "", "  ")
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -521,23 +548,33 @@ func (s *service) buildTableResource(ctx context.Context, connectionName, schema
 	if schema == "" {
 		schema = conn.Info().DefaultSchema
 	}
+	limits := s.manager.Limits()
 	columns, err := conn.DescribeTable(ctx, schema, table)
 	if err != nil {
 		return "", err
 	}
-	foreignKeys, err := conn.ListForeignKeys(ctx, schema, table, s.manager.Limits().HardMaxRows)
+	sectionBudget := max(256, limits.MaxTotalChars/4)
+	columns, columnsTruncated := database.CompactColumns(columns, limits.HardMaxRows, sectionBudget)
+	foreignKeys, err := conn.ListForeignKeys(ctx, schema, table, limits.HardMaxRows)
 	if err != nil {
 		return "", err
 	}
-	indexes, err := conn.ListIndexes(ctx, schema, table, s.manager.Limits().HardMaxRows)
+	foreignKeys, foreignKeysTruncated := database.CompactForeignKeys(foreignKeys, limits.HardMaxRows, sectionBudget)
+	indexes, err := conn.ListIndexes(ctx, schema, table, limits.HardMaxRows)
 	if err != nil {
 		return "", err
 	}
+	indexes, indexesTruncated := database.CompactIndexes(indexes, limits.HardMaxRows, sectionBudget, limits.MaxCellChars)
 	comments, err := conn.GetTableComments(ctx, schema, table)
 	if err != nil {
 		return "", err
 	}
-	body, err := json.MarshalIndent(&tableResourceOutput{
+	comments, commentsTruncated := database.CompactTableComments(comments, limits.HardMaxRows, sectionBudget, limits.MaxCellChars)
+	notice := ""
+	if columnsTruncated || foreignKeysTruncated || indexesTruncated || commentsTruncated {
+		notice = database.MetadataNotice()
+	}
+	body, err := json.Marshal(&tableResourceOutput{
 		Connection:  conn.Info().Name,
 		Schema:      schema,
 		Table:       table,
@@ -545,7 +582,8 @@ func (s *service) buildTableResource(ctx context.Context, connectionName, schema
 		ForeignKeys: foreignKeys,
 		Indexes:     indexes,
 		Comments:    comments,
-	}, "", "  ")
+		Notice:      notice,
+	})
 	if err != nil {
 		return "", err
 	}

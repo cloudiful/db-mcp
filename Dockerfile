@@ -1,4 +1,4 @@
-FROM nexus.cloud1ful.com/dockerhub/library/golang:1.25-trixie AS builder
+FROM nexus.cloud1ful.com/dockerhub/library/golang:1.26.2-trixie AS builder
 
 WORKDIR /src
 
@@ -11,11 +11,24 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o
 
 FROM nexus.cloud1ful.com/dockerhub/library/debian:13-slim
 
-RUN printf '%s\n' \
-        'deb https://nexus.cloud1ful.com/repository/apt-debian trixie main' \
-        'deb https://nexus.cloud1ful.com/repository/apt-debian trixie-updates main' \
-        'deb https://nexus.cloud1ful.com/repository/apt-debian-security trixie-security main' \
-        > /etc/apt/sources.list \
+RUN rm -f /etc/apt/sources.list \
+    && printf '%s\n' \
+        'Types: deb' \
+        'URIs: https://apt.cloud1ful.com/deb.debian.org/debian' \
+        'Suites: trixie trixie-updates' \
+        'Components: main contrib non-free non-free-firmware' \
+        'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+        '' \
+        'Types: deb' \
+        'URIs: https://apt.cloud1ful.com/deb.debian.org/debian-security' \
+        'Suites: trixie-security' \
+        'Components: main contrib non-free non-free-firmware' \
+        'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+        > /etc/apt/sources.list.d/debian.sources \
+    && printf '%s\n' \
+        'Acquire::https::apt.cloud1ful.com::Verify-Peer "false";' \
+        'Acquire::https::apt.cloud1ful.com::Verify-Host "false";' \
+        > /etc/apt/apt.conf.d/99apt-cloud1ful-insecure \
     && apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \

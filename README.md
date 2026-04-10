@@ -46,6 +46,12 @@ Supported environment variables for connections:
 - `DATABASE_URL` is also accepted as the PostgreSQL DSN fallback
 - `SQLITE_URL` is also accepted as the SQLite DSN fallback
 
+Default context-protection limits are intentionally conservative:
+
+- `defaultMaxRows`: `5`
+- `hardMaxRows`: `20`
+- `maxTotalChars`: `1000`
+
 When `-config` is used, connection settings from the environment are now merged with the file instead of being ignored. If an environment connection has the same connection name, it replaces the file entry.
 
 For HTTP mode:

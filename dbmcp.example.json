@@ -7,11 +7,11 @@
     "httpPath": "/mcp"
   },
   "limits": {
-    "defaultMaxRows": 50,
-    "hardMaxRows": 200,
+    "defaultMaxRows": 5,
+    "hardMaxRows": 20,
     "maxColumns": 40,
     "maxCellChars": 512,
-    "maxTotalChars": 12000,
+    "maxTotalChars": 1000,
     "queryTimeout": "15s"
   },
   "connections": [

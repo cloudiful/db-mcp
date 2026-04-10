@@ -282,4 +282,7 @@ func TestServerRegistersInstructionsAndPrompts(t *testing.T) {
 	if len(tableResource.Contents) != 1 || !strings.Contains(tableResource.Contents[0].Text, "idx_purchase_order_user_profile") {
 		t.Fatalf("unexpected table resource %#v", tableResource.Contents)
 	}
+	if strings.Contains(tableResource.Contents[0].Text, "\n") {
+		t.Fatalf("expected compact json resource, got %q", tableResource.Contents[0].Text)
+	}
 }
