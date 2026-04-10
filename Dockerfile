@@ -1,4 +1,4 @@
-FROM nexus.cloud1ful.com/dockerhub/library/golang:1.26.2-trixie AS builder
+FROM dockerhub.cloud1ful.com/library/golang:1.26.2-trixie AS builder
 
 WORKDIR /src
 
@@ -9,7 +9,7 @@ COPY . .
 
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/dbmcp ./cmd/dbmcp
 
-FROM nexus.cloud1ful.com/dockerhub/library/debian:13-slim
+FROM dockerhub.cloud1ful.com/library/debian:trixie-slim
 
 RUN rm -f /etc/apt/sources.list \
     && printf '%s\n' \
