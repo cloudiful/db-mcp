@@ -12,6 +12,8 @@
     "maxColumns": 40,
     "maxCellChars": 512,
     "maxTotalChars": 1000,
+    "explainMaxLines": 12,
+    "explainMaxTotalChars": 4000,
     "queryTimeout": "15s"
   },
   "connections": [

@@ -148,3 +148,39 @@ func TestSQLiteQueryContextStaysAliveUntilRowsClosed(t *testing.T) {
 		t.Fatalf("expected cleanup to succeed, got %v", err)
 	}
 }
+
+func TestSQLiteExplainQueryUsesDedicatedBudget(t *testing.T) {
+	t.Parallel()
+
+	conn, err := openConnection(context.Background(), config.ConnectionConfig{
+		Name:   "sqlite-explain-limit-test",
+		Driver: "sqlite",
+		SQLite: &config.SQLiteConfig{
+			DSN: "file:test-sqlite-explain-limit?mode=memory&cache=shared",
+		},
+	}, database.Limits{
+		DefaultMaxRows:       10,
+		HardMaxRows:          20,
+		MaxColumns:           20,
+		MaxCellChars:         256,
+		MaxTotalChars:        5,
+		ExplainMaxLines:      10,
+		ExplainMaxTotalChars: 1024,
+		QueryTimeout:         5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("open sqlite connection: %v", err)
+	}
+	defer conn.Close()
+
+	result, err := conn.ExplainQuery(context.Background(), `SELECT 1`)
+	if err != nil {
+		t.Fatalf("explain query: %v", err)
+	}
+	if len(result.PlanLines) == 0 {
+		t.Fatal("expected explain output to use dedicated explain budget")
+	}
+	if result.Notice != "" {
+		t.Fatalf("expected explain output without truncation notice, got %q", result.Notice)
+	}
+}

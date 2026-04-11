@@ -158,3 +158,28 @@ func TestLoadEnvConnectionOverridesFileConnectionWithSameName(t *testing.T) {
 		t.Fatalf("unexpected overridden schema: %q", got)
 	}
 }
+
+func TestValidateAssignsExplainDefaults(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{
+		Server: ServerConfig{},
+		Limits: LimitsConfig{},
+		Connections: []ConnectionConfig{{
+			Driver: "sqlite",
+			SQLite: &SQLiteConfig{
+				DSN: "file:app.db?mode=ro",
+			},
+		}},
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate config: %v", err)
+	}
+	if cfg.Limits.ExplainMaxLines != 12 {
+		t.Fatalf("expected default explainMaxLines 12, got %d", cfg.Limits.ExplainMaxLines)
+	}
+	if cfg.Limits.ExplainMaxTotalChars != 4000 {
+		t.Fatalf("expected default explainMaxTotalChars 4000, got %d", cfg.Limits.ExplainMaxTotalChars)
+	}
+}

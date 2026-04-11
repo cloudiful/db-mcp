@@ -36,12 +36,14 @@ type ServerConfig struct {
 }
 
 type LimitsConfig struct {
-	DefaultMaxRows int    `json:"defaultMaxRows"`
-	HardMaxRows    int    `json:"hardMaxRows"`
-	MaxColumns     int    `json:"maxColumns"`
-	MaxCellChars   int    `json:"maxCellChars"`
-	MaxTotalChars  int    `json:"maxTotalChars"`
-	QueryTimeout   string `json:"queryTimeout"`
+	DefaultMaxRows       int    `json:"defaultMaxRows"`
+	HardMaxRows          int    `json:"hardMaxRows"`
+	MaxColumns           int    `json:"maxColumns"`
+	MaxCellChars         int    `json:"maxCellChars"`
+	MaxTotalChars        int    `json:"maxTotalChars"`
+	ExplainMaxLines      int    `json:"explainMaxLines"`
+	ExplainMaxTotalChars int    `json:"explainMaxTotalChars"`
+	QueryTimeout         string `json:"queryTimeout"`
 }
 
 type ConnectionConfig struct {
@@ -133,6 +135,12 @@ func (c *Config) Validate() error {
 	if c.Limits.MaxTotalChars <= 0 {
 		c.Limits.MaxTotalChars = 1000
 	}
+	if c.Limits.ExplainMaxLines <= 0 {
+		c.Limits.ExplainMaxLines = 12
+	}
+	if c.Limits.ExplainMaxTotalChars <= 0 {
+		c.Limits.ExplainMaxTotalChars = 4000
+	}
 	if c.Limits.QueryTimeout == "" {
 		c.Limits.QueryTimeout = "15s"
 	}
@@ -199,12 +207,14 @@ func defaultConfig() *Config {
 			HTTPPath:  "/mcp",
 		},
 		Limits: LimitsConfig{
-			DefaultMaxRows: 5,
-			HardMaxRows:    20,
-			MaxColumns:     40,
-			MaxCellChars:   512,
-			MaxTotalChars:  1000,
-			QueryTimeout:   "15s",
+			DefaultMaxRows:       5,
+			HardMaxRows:          20,
+			MaxColumns:           40,
+			MaxCellChars:         512,
+			MaxTotalChars:        1000,
+			ExplainMaxLines:      12,
+			ExplainMaxTotalChars: 4000,
+			QueryTimeout:         "15s",
 		},
 	}
 }

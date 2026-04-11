@@ -120,22 +120,26 @@ type QueryResult struct {
 }
 
 type Limits struct {
-	DefaultMaxRows int
-	HardMaxRows    int
-	MaxColumns     int
-	MaxCellChars   int
-	MaxTotalChars  int
-	QueryTimeout   time.Duration
+	DefaultMaxRows       int
+	HardMaxRows          int
+	MaxColumns           int
+	MaxCellChars         int
+	MaxTotalChars        int
+	ExplainMaxLines      int
+	ExplainMaxTotalChars int
+	QueryTimeout         time.Duration
 }
 
 func NewLimits(cfg *config.Config) Limits {
 	return Limits{
-		DefaultMaxRows: cfg.Limits.DefaultMaxRows,
-		HardMaxRows:    cfg.Limits.HardMaxRows,
-		MaxColumns:     cfg.Limits.MaxColumns,
-		MaxCellChars:   cfg.Limits.MaxCellChars,
-		MaxTotalChars:  cfg.Limits.MaxTotalChars,
-		QueryTimeout:   cfg.QueryTimeout(),
+		DefaultMaxRows:       cfg.Limits.DefaultMaxRows,
+		HardMaxRows:          cfg.Limits.HardMaxRows,
+		MaxColumns:           cfg.Limits.MaxColumns,
+		MaxCellChars:         cfg.Limits.MaxCellChars,
+		MaxTotalChars:        cfg.Limits.MaxTotalChars,
+		ExplainMaxLines:      cfg.Limits.ExplainMaxLines,
+		ExplainMaxTotalChars: cfg.Limits.ExplainMaxTotalChars,
+		QueryTimeout:         cfg.QueryTimeout(),
 	}
 }
 

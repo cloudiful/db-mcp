@@ -51,6 +51,10 @@ Default context-protection limits are intentionally conservative:
 - `defaultMaxRows`: `5`
 - `hardMaxRows`: `20`
 - `maxTotalChars`: `1000`
+- `explainMaxLines`: `12`
+- `explainMaxTotalChars`: `4000`
+
+`explain_query` now uses its own truncation budget so execution plans can be a bit longer without also loosening normal `execute_query` result limits.
 
 When `-config` is used, connection settings from the environment are now merged with the file instead of being ignored. If an environment connection has the same connection name, it replaces the file entry.
 

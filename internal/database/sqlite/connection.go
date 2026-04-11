@@ -479,7 +479,7 @@ func (c *connection) ExplainQuery(ctx context.Context, query string) (*database.
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate sqlite explain rows: %w", err)
 	}
-	lines, truncated := database.TruncateLines(lines, c.limits.DefaultMaxRows, c.limits.MaxTotalChars)
+	lines, truncated := database.TruncateLines(lines, c.limits.ExplainMaxLines, c.limits.ExplainMaxTotalChars)
 	result := &database.ExplainResult{
 		Format:    "text",
 		PlanLines: lines,
