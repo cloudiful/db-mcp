@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"db/internal/config"
@@ -18,13 +19,16 @@ func init() {
 }
 
 type connection struct {
-	name          string
-	defaultSchema string
-	db            *sql.DB
-	limits        database.Limits
+	name             string
+	configuredSchema string
+	defaultSchema    string
+	db               *sql.DB
+	limits           database.Limits
+	mu               sync.RWMutex
 }
 
 func openConnection(ctx context.Context, cfg config.ConnectionConfig, limits database.Limits) (database.Connection, error) {
+	_ = ctx
 	db, err := sql.Open("pgx", cfg.Postgres.DSN)
 	if err != nil {
 		return nil, err
@@ -33,31 +37,18 @@ func openConnection(ctx context.Context, cfg config.ConnectionConfig, limits dat
 	db.SetMaxIdleConns(2)
 	db.SetMaxOpenConns(4)
 
-	pingCtx, cancel := limits.WithTimeout(ctx)
-	defer cancel()
-	if err := db.PingContext(pingCtx); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-
-	defaultSchema, err := fetchDefaultSchema(pingCtx, db)
-	if err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	if strings.TrimSpace(cfg.Postgres.Schema) != "" {
-		defaultSchema = strings.TrimSpace(cfg.Postgres.Schema)
-		if err := ensureSchemaVisible(pingCtx, db, defaultSchema); err != nil {
-			_ = db.Close()
-			return nil, err
-		}
+	defaultSchema := "public"
+	configuredSchema := strings.TrimSpace(cfg.Postgres.Schema)
+	if configuredSchema != "" {
+		defaultSchema = configuredSchema
 	}
 
 	return &connection{
-		name:          cfg.Name,
-		defaultSchema: defaultSchema,
-		db:            db,
-		limits:        limits,
+		name:             cfg.Name,
+		configuredSchema: configuredSchema,
+		defaultSchema:    defaultSchema,
+		db:               db,
+		limits:           limits,
 	}, nil
 }
 
@@ -92,8 +83,17 @@ func (c *connection) Info() database.ConnectionInfo {
 	return database.ConnectionInfo{
 		Name:          c.name,
 		Driver:        "postgres",
-		DefaultSchema: c.defaultSchema,
+		DefaultSchema: c.schema(),
 	}
+}
+
+func (c *connection) Ping(ctx context.Context) error {
+	pingCtx, cancel := c.limits.WithTimeout(ctx)
+	defer cancel()
+	if err := c.db.PingContext(pingCtx); err != nil {
+		return err
+	}
+	return c.refreshDefaultSchema(pingCtx)
 }
 
 func (c *connection) ListSchemas(ctx context.Context, filter string, limit int) ([]database.SchemaInfo, error) {
@@ -126,7 +126,7 @@ LIMIT $2`, likeFilter(filter), limit)
 func (c *connection) ListTables(ctx context.Context, schema, filter string, limit int) ([]database.TableInfo, error) {
 	limit = c.limits.NormalizeListLimit(limit)
 	if strings.TrimSpace(schema) == "" {
-		schema = c.defaultSchema
+		schema = c.schema()
 	}
 
 	rows, cleanup, err := c.query(ctx, `
@@ -159,7 +159,7 @@ LIMIT $3`, exactFilter(schema), likeFilter(filter), limit)
 func (c *connection) SearchColumns(ctx context.Context, schema, filter string, limit int) ([]database.ColumnMatchInfo, error) {
 	limit = c.limits.NormalizeListLimit(limit)
 	if strings.TrimSpace(schema) == "" {
-		schema = c.defaultSchema
+		schema = c.schema()
 	}
 
 	rows, cleanup, err := c.query(ctx, `
@@ -191,7 +191,7 @@ LIMIT $3`, exactFilter(schema), likeFilter(filter), limit)
 func (c *connection) ListForeignKeys(ctx context.Context, schema, table string, limit int) ([]database.ForeignKeyInfo, error) {
 	limit = c.limits.NormalizeListLimit(limit)
 	if strings.TrimSpace(schema) == "" {
-		schema = c.defaultSchema
+		schema = c.schema()
 	}
 
 	rows, cleanup, err := c.query(ctx, `
@@ -251,7 +251,7 @@ LIMIT $3`, exactFilter(schema), exactFilter(table), limit)
 func (c *connection) ListIndexes(ctx context.Context, schema, table string, limit int) ([]database.IndexInfo, error) {
 	limit = c.limits.NormalizeListLimit(limit)
 	if strings.TrimSpace(schema) == "" {
-		schema = c.defaultSchema
+		schema = c.schema()
 	}
 
 	rows, cleanup, err := c.query(ctx, `
@@ -315,7 +315,7 @@ func (c *connection) GetTableComments(ctx context.Context, schema, table string)
 		return nil, fmt.Errorf("table is required")
 	}
 	if strings.TrimSpace(schema) == "" {
-		schema = c.defaultSchema
+		schema = c.schema()
 	}
 
 	rows, cleanup, err := c.query(ctx, `
@@ -381,7 +381,7 @@ func (c *connection) DescribeTable(ctx context.Context, schema, table string) ([
 		return nil, fmt.Errorf("table is required")
 	}
 	if strings.TrimSpace(schema) == "" {
-		schema = c.defaultSchema
+		schema = c.schema()
 	}
 
 	rows, cleanup, err := c.query(ctx, `
@@ -491,7 +491,7 @@ func (c *connection) query(ctx context.Context, query string, args ...any) (*sql
 		cancel()
 		return nil, nil, err
 	}
-	if err := setLocalSearchPath(queryCtx, tx, c.defaultSchema); err != nil {
+	if err := setLocalSearchPath(queryCtx, tx, c.schema()); err != nil {
 		_ = tx.Rollback()
 		cancel()
 		return nil, nil, err
@@ -513,6 +513,33 @@ func (c *connection) query(ctx context.Context, query string, args ...any) (*sql
 		cancel()
 		return firstErr
 	}, nil
+}
+
+func (c *connection) schema() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.defaultSchema
+}
+
+func (c *connection) refreshDefaultSchema(ctx context.Context) error {
+	if c.configuredSchema != "" {
+		if err := ensureSchemaVisible(ctx, c.db, c.configuredSchema); err != nil {
+			return err
+		}
+		c.mu.Lock()
+		c.defaultSchema = c.configuredSchema
+		c.mu.Unlock()
+		return nil
+	}
+
+	schema, err := fetchDefaultSchema(ctx, c.db)
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.defaultSchema = schema
+	c.mu.Unlock()
+	return nil
 }
 
 func setLocalSearchPath(ctx context.Context, tx *sql.Tx, schema string) error {

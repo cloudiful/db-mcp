@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,6 +14,61 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+type stubUnavailableConnection struct {
+	name    string
+	driver  string
+	schema  string
+	pingErr error
+}
+
+func (s *stubUnavailableConnection) Info() database.ConnectionInfo {
+	return database.ConnectionInfo{Name: s.name, Driver: s.driver, DefaultSchema: s.schema}
+}
+
+func (s *stubUnavailableConnection) Ping(context.Context) error {
+	return s.pingErr
+}
+
+func (s *stubUnavailableConnection) ListSchemas(context.Context, string, int) ([]database.SchemaInfo, error) {
+	return []database.SchemaInfo{{Name: s.schema}}, nil
+}
+
+func (s *stubUnavailableConnection) ListTables(context.Context, string, string, int) ([]database.TableInfo, error) {
+	return nil, nil
+}
+
+func (s *stubUnavailableConnection) SearchColumns(context.Context, string, string, int) ([]database.ColumnMatchInfo, error) {
+	return nil, nil
+}
+
+func (s *stubUnavailableConnection) ListForeignKeys(context.Context, string, string, int) ([]database.ForeignKeyInfo, error) {
+	return nil, nil
+}
+
+func (s *stubUnavailableConnection) ListIndexes(context.Context, string, string, int) ([]database.IndexInfo, error) {
+	return nil, nil
+}
+
+func (s *stubUnavailableConnection) GetTableComments(context.Context, string, string) (*database.TableCommentInfo, error) {
+	return nil, nil
+}
+
+func (s *stubUnavailableConnection) DescribeTable(context.Context, string, string) ([]database.ColumnInfo, error) {
+	return nil, nil
+}
+
+func (s *stubUnavailableConnection) ExecuteQuery(context.Context, string, int) (*database.QueryResult, error) {
+	return nil, nil
+}
+
+func (s *stubUnavailableConnection) ExplainQuery(context.Context, string) (*database.ExplainResult, error) {
+	return nil, nil
+}
+
+func (s *stubUnavailableConnection) Close() error {
+	return nil
+}
 
 func newSQLiteTestManager(t *testing.T) (*config.Config, *database.Manager) {
 	tempDir := t.TempDir()
@@ -227,6 +283,9 @@ func TestServerRegistersInstructionsAndPrompts(t *testing.T) {
 	if !strings.Contains(initResult.Instructions, "search_columns") || !strings.Contains(initResult.Instructions, "list_foreign_keys") {
 		t.Fatalf("expected instructions to mention search_columns, got %q", initResult.Instructions)
 	}
+	if !strings.Contains(initResult.Instructions, "get_health") || !strings.Contains(initResult.Instructions, "db://health") {
+		t.Fatalf("expected instructions to mention health checks, got %q", initResult.Instructions)
+	}
 	if !strings.Contains(initResult.Instructions, "db://table/{connection}/{schema}/{table}") {
 		t.Fatalf("expected instructions to mention table resource, got %q", initResult.Instructions)
 	}
@@ -261,7 +320,10 @@ func TestServerRegistersInstructionsAndPrompts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list resources: %v", err)
 	}
-	if len(resources.Resources) != 1 || resources.Resources[0].URI != "db://connections" {
+	if len(resources.Resources) != 2 {
+		t.Fatalf("unexpected resources %#v", resources.Resources)
+	}
+	if resources.Resources[0].URI != "db://connections" || resources.Resources[1].URI != "db://health" {
 		t.Fatalf("unexpected resources %#v", resources.Resources)
 	}
 
@@ -284,5 +346,93 @@ func TestServerRegistersInstructionsAndPrompts(t *testing.T) {
 	}
 	if strings.Contains(tableResource.Contents[0].Text, "\n") {
 		t.Fatalf("expected compact json resource, got %q", tableResource.Contents[0].Text)
+	}
+
+	healthResource, err := session.ReadResource(context.Background(), &mcp.ReadResourceParams{
+		URI: "db://health",
+	})
+	if err != nil {
+		t.Fatalf("read health resource: %v", err)
+	}
+	if len(healthResource.Contents) != 1 || !strings.Contains(healthResource.Contents[0].Text, `"status":"up"`) {
+		t.Fatalf("unexpected health resource %#v", healthResource.Contents)
+	}
+}
+
+func TestGetHealthReportsMixedAvailability(t *testing.T) {
+	t.Parallel()
+
+	healthyDriver := "mcpserver-health-healthy"
+	downDriver := "mcpserver-health-down"
+	database.Register(healthyDriver, func(context.Context, config.ConnectionConfig, database.Limits) (database.Connection, error) {
+		return &stubUnavailableConnection{name: "healthy", driver: "stub", schema: "main"}, nil
+	})
+	database.Register(downDriver, func(context.Context, config.ConnectionConfig, database.Limits) (database.Connection, error) {
+		return &stubUnavailableConnection{name: "down", driver: "stub", schema: "main", pingErr: errors.New("dial timeout")}, nil
+	})
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{},
+		Limits: config.LimitsConfig{},
+		Connections: []config.ConnectionConfig{
+			{Name: "healthy", Driver: healthyDriver},
+			{Name: "down", Driver: downDriver},
+		},
+	}
+	manager, err := database.NewManager(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	defer manager.Close()
+
+	svc := &service{manager: manager}
+	refresh := false
+	_, output, err := svc.getHealth(context.Background(), nil, getHealthInput{Refresh: &refresh})
+	if err != nil {
+		t.Fatalf("get health: %v", err)
+	}
+	if output.Status != database.StatusDegraded {
+		t.Fatalf("expected degraded health, got %#v", output)
+	}
+	if len(output.Connections) != 2 {
+		t.Fatalf("expected two connections, got %#v", output.Connections)
+	}
+}
+
+func TestDownConnectionReturnsUnavailableToolError(t *testing.T) {
+	t.Parallel()
+
+	driver := "mcpserver-down-only"
+	database.Register(driver, func(context.Context, config.ConnectionConfig, database.Limits) (database.Connection, error) {
+		return &stubUnavailableConnection{name: "down", driver: "stub", schema: "main", pingErr: errors.New("db is down")}, nil
+	})
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{},
+		Limits: config.LimitsConfig{},
+		Connections: []config.ConnectionConfig{
+			{Name: "down", Driver: driver},
+		},
+	}
+	manager, err := database.NewManager(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	defer manager.Close()
+
+	svc := &service{manager: manager}
+	result, output, err := svc.listSchemas(context.Background(), nil, listInput{Connection: "down"})
+	if err != nil {
+		t.Fatalf("list schemas returned outer error: %v", err)
+	}
+	if output != nil {
+		t.Fatalf("expected no structured output on tool error, got %#v", output)
+	}
+	if result == nil || !result.IsError {
+		t.Fatalf("expected tool error result, got %#v", result)
+	}
+	content, ok := result.Content[0].(*mcp.TextContent)
+	if !ok || !strings.Contains(content.Text, "unavailable") {
+		t.Fatalf("expected unavailable error text, got %#v", result.Content)
 	}
 }

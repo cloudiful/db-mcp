@@ -27,6 +27,7 @@ type connection struct {
 }
 
 func openConnection(ctx context.Context, cfg config.ConnectionConfig, limits database.Limits) (database.Connection, error) {
+	_ = ctx
 	dsn, err := buildOracleDSN(cfg.Oracle.Username, cfg.Oracle.Password, cfg.Oracle.JDBCURL, limits.QueryTimeout)
 	if err != nil {
 		return nil, err
@@ -39,13 +40,6 @@ func openConnection(ctx context.Context, cfg config.ConnectionConfig, limits dat
 	db.SetConnMaxLifetime(5 * time.Minute)
 	db.SetMaxIdleConns(2)
 	db.SetMaxOpenConns(4)
-
-	pingCtx, cancel := limits.WithTimeout(ctx)
-	defer cancel()
-	if err := db.PingContext(pingCtx); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
 
 	return &connection{
 		name:          cfg.Name,
@@ -72,6 +66,12 @@ func (c *connection) Info() database.ConnectionInfo {
 		Driver:        "oracle",
 		DefaultSchema: c.defaultSchema,
 	}
+}
+
+func (c *connection) Ping(ctx context.Context) error {
+	pingCtx, cancel := c.limits.WithTimeout(ctx)
+	defer cancel()
+	return c.db.PingContext(pingCtx)
 }
 
 func (c *connection) ExecuteQuery(ctx context.Context, query string, maxRows int) (*database.QueryResult, error) {

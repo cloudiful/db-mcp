@@ -4,14 +4,16 @@ Minimal MCP server for databases, implemented in Go. Oracle, PostgreSQL, and SQL
 
 ## Features
 
-- MCP tools: `list_connections`, `list_schemas`, `list_tables`, `search_columns`, `list_foreign_keys`, `list_indexes`, `get_table_comments`, `describe_table`, `execute_query`, `explain_query`
+- MCP tools: `list_connections`, `get_health`, `list_schemas`, `list_tables`, `search_columns`, `list_foreign_keys`, `list_indexes`, `get_table_comments`, `describe_table`, `execute_query`, `explain_query`
 - MCP prompts: `explore_database`, `inspect_table`
-- MCP resources: `db://connections` and `db://table/{connection}/{schema}/{table}`
+- MCP resources: `db://connections`, `db://health`, and `db://table/{connection}/{schema}/{table}`
 - Server-level MCP instructions to steer clients toward safe schema discovery before ad hoc SQL
 - Oracle support via a pure Go driver, so it can connect directly from a Go binary without Oracle Instant Client
 - PostgreSQL support via `pgx` stdlib
 - SQLite support via the pure Go `modernc.org/sqlite` driver
 - Supports `stdio`, `http`, and `both` transport modes
+- Degraded startup: the server stays up even when some or all configured databases are down
+- Per-connection health tracking with automatic recovery probes on later tool calls
 - Explicit read-only transaction handling for query execution and metadata reads
 - Row, cell, column, and total output truncation to avoid blowing up MCP context
 
@@ -66,6 +68,26 @@ go run ./cmd/dbmcp -config ./dbmcp.example.json -transport http -http-addr :8080
 
 The streamable HTTP endpoint defaults to `/mcp`.
 
+## Health and degraded startup
+
+This server now starts as long as the config is valid, even if one or more configured databases are unavailable at boot. Each connection is probed independently and exposed with cached health metadata:
+
+- `status`: `up`, `degraded`, or `down` at the aggregate level; per-connection entries report `up` or `down`
+- `available`: boolean readiness for that specific connection
+- `lastCheckedAt`, `lastSuccessfulAt`, `lastError`
+
+Use these surfaces to inspect health:
+
+- MCP tool: `get_health`
+- MCP resource: `db://health`
+- HTTP liveness: `/healthz`
+- HTTP readiness: `/readyz`
+
+`/healthz` is process liveness only and always returns `200 ok` while the server is running. `/readyz` returns JSON health details and:
+
+- `200` when at least one configured connection is currently available
+- `503` when every configured connection is currently unavailable
+
 ## Docker
 
 Build the image with your Nexus mirror:
@@ -92,13 +114,14 @@ The container defaults to:
 - `-http-addr :8080`
 - MCP endpoint: `http://<host>:8080/mcp`
 - Health endpoint: `http://<host>:8080/healthz`
+- Readiness endpoint: `http://<host>:8080/readyz`
 
 On startup the server now logs:
 
 - each configured database connection before connect, including a redacted PostgreSQL target
 - enabled transport
-- HTTP host, port, and MCP path when HTTP is enabled
-- each configured database connection and whether it connected successfully
+- HTTP host, port, MCP path, and health endpoints when HTTP is enabled
+- each configured database connection and whether its initial probe is `up` or `down`
 
 You can also enable debug logging with:
 
@@ -124,8 +147,10 @@ docker run --rm -p 8081:8081 \
 
 ## Notes
 
+- If availability is uncertain, start with `get_health` or `db://health`.
 - Prefer the discovery flow `list_connections` / `db://connections` -> `list_schemas` -> `list_tables` / `search_columns` -> `list_foreign_keys` / `list_indexes` / `get_table_comments` / `describe_table` before `execute_query`.
 - If the MCP client supports resources, `db://table/{connection}/{schema}/{table}` returns a compact JSON bundle for one table with columns, foreign keys, indexes, and comments.
+- `list_connections` now includes cached health fields for each configured connection.
 - Resources are a native MCP concept, not a custom extension in this repo. They are read-oriented endpoints that let the client fetch structured context such as `db://connections` or one table overview without inventing an extra tool call.
 - This server's MCP instructions, prompts, tools, and resources are registered in `internal/mcpserver/server.go`. Clients vary in how visibly they surface prompts/resources/instructions, but the server exports them all.
 - `execute_query` only accepts `SELECT` and `WITH` statements.

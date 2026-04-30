@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"log"
@@ -80,18 +81,30 @@ func main() {
 
 	server := mcpserver.New(cfg, manager)
 
-	if err := run(ctx, cfg, server); err != nil && !errors.Is(err, context.Canceled) {
+	if err := run(ctx, cfg, manager, server); err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatalf("run server: %v", err)
 	}
 }
 
 func logStartup(cfg *config.Config, manager *database.Manager) {
 	for _, info := range manager.ConnectionInfos() {
+		if info.Available {
+			log.Printf(
+				"database probe: name=%s driver=%s default_schema=%s status=%s",
+				info.Name,
+				info.Driver,
+				info.DefaultSchema,
+				info.Status,
+			)
+			continue
+		}
 		log.Printf(
-			"database connected: name=%s driver=%s default_schema=%s status=ok",
+			"database probe: name=%s driver=%s default_schema=%s status=%s last_error=%q",
 			info.Name,
 			info.Driver,
 			info.DefaultSchema,
+			info.Status,
+			info.LastError,
 		)
 	}
 
@@ -134,7 +147,7 @@ func logStartupPlan(cfg *config.Config, configPath string) {
 func logHTTPListen(cfg *config.Config) {
 	host, port := splitListenAddr(cfg.Server.HTTPAddr)
 	log.Printf(
-		"http MCP listening: host=%s port=%s path=%s healthz=/healthz",
+		"http MCP listening: host=%s port=%s path=%s healthz=/healthz readyz=/readyz",
 		host,
 		port,
 		cfg.Server.HTTPPath,
@@ -219,34 +232,23 @@ func configPathOrDefault(path string) string {
 	return path
 }
 
-func run(ctx context.Context, cfg *config.Config, server *mcp.Server) error {
+func run(ctx context.Context, cfg *config.Config, manager *database.Manager, server *mcp.Server) error {
 	switch cfg.Server.Transport {
 	case config.TransportStdio:
 		return server.Run(ctx, &mcp.StdioTransport{})
 	case config.TransportHTTP:
-		return runHTTP(ctx, cfg, server)
+		return runHTTP(ctx, cfg, manager, server)
 	case config.TransportBoth:
-		return runBoth(ctx, cfg, server)
+		return runBoth(ctx, cfg, manager, server)
 	default:
 		return config.ErrInvalidTransport
 	}
 }
 
-func runHTTP(ctx context.Context, cfg *config.Config, server *mcp.Server) error {
-	handler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
-		return server
-	}, &mcp.StreamableHTTPOptions{})
-
-	mux := http.NewServeMux()
-	mux.Handle(cfg.Server.HTTPPath, handler)
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	})
-
+func runHTTP(ctx context.Context, cfg *config.Config, manager *database.Manager, server *mcp.Server) error {
 	httpServer := &http.Server{
 		Addr:              cfg.Server.HTTPAddr,
-		Handler:           mux,
+		Handler:           buildHTTPHandler(cfg, manager, server),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -263,11 +265,39 @@ func runHTTP(ctx context.Context, cfg *config.Config, server *mcp.Server) error 
 	return nil
 }
 
-func runBoth(ctx context.Context, cfg *config.Config, server *mcp.Server) error {
+func buildHTTPHandler(cfg *config.Config, manager *database.Manager, server *mcp.Server) http.Handler {
+	handler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
+		return server
+	}, &mcp.StreamableHTTPOptions{})
+
+	mux := http.NewServeMux()
+	mux.Handle(cfg.Server.HTTPPath, handler)
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		snapshot, err := manager.Health(r.Context(), "", true)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		statusCode := http.StatusOK
+		if snapshot.Status == database.StatusDown {
+			statusCode = http.StatusServiceUnavailable
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(statusCode)
+		_ = json.NewEncoder(w).Encode(snapshot)
+	})
+	return mux
+}
+
+func runBoth(ctx context.Context, cfg *config.Config, manager *database.Manager, server *mcp.Server) error {
 	errCh := make(chan error, 2)
 
 	go func() {
-		errCh <- runHTTP(ctx, cfg, server)
+		errCh <- runHTTP(ctx, cfg, manager, server)
 	}()
 	go func() {
 		errCh <- server.Run(ctx, &mcp.StdioTransport{})

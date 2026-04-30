@@ -69,6 +69,11 @@ type explainQueryInput struct {
 	SQL        string `json:"sql" jsonschema:"read-only SELECT or WITH query to explain"`
 }
 
+type getHealthInput struct {
+	Connection string `json:"connection,omitempty" jsonschema:"optional connection name; when omitted, return all configured connections"`
+	Refresh    *bool  `json:"refresh,omitempty" jsonschema:"optional; defaults to true to probe the current health before returning"`
+}
+
 type listConnectionsOutput struct {
 	DefaultConnection string                    `json:"defaultConnection"`
 	Connections       []database.ConnectionInfo `json:"connections"`
@@ -124,6 +129,12 @@ type explainQueryOutput struct {
 	Explain    *database.ExplainResult `json:"explain"`
 }
 
+type getHealthOutput struct {
+	Status            string                      `json:"status"`
+	DefaultConnection string                      `json:"defaultConnection"`
+	Connections       []database.ConnectionHealth `json:"connections"`
+}
+
 type tableResourceOutput struct {
 	Connection  string                     `json:"connection"`
 	Schema      string                     `json:"schema"`
@@ -149,6 +160,11 @@ func New(cfg *config.Config, manager *database.Manager) *mcp.Server {
 		Name:        "list_connections",
 		Description: "List configured database connections.",
 	}, svc.listConnections)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "get_health",
+		Description: "Return current database availability and health details for one or all configured connections.",
+	}, svc.getHealth)
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "list_schemas",
@@ -203,6 +219,14 @@ func New(cfg *config.Config, manager *database.Manager) *mcp.Server {
 		MIMEType:    "application/json",
 	}, svc.readConnectionsResource)
 
+	server.AddResource(&mcp.Resource{
+		URI:         "db://health",
+		Name:        "health",
+		Title:       "Database Health",
+		Description: "Current availability and health details for configured database connections.",
+		MIMEType:    "application/json",
+	}, svc.readHealthResource)
+
 	server.AddResourceTemplate(&mcp.ResourceTemplate{
 		URITemplate: "db://table/{connection}/{schema}/{table}",
 		Name:        "table_overview",
@@ -245,6 +269,23 @@ func (s *service) listConnections(_ context.Context, _ *mcp.CallToolRequest, _ s
 		Connections:       s.manager.ConnectionInfos(),
 	}
 	return textResult(fmt.Sprintf("Configured %d connection(s). Default is %s.", len(output.Connections), output.DefaultConnection)), output, nil
+}
+
+func (s *service) getHealth(ctx context.Context, _ *mcp.CallToolRequest, input getHealthInput) (*mcp.CallToolResult, *getHealthOutput, error) {
+	refresh := true
+	if input.Refresh != nil {
+		refresh = *input.Refresh
+	}
+	snapshot, err := s.manager.Health(ctx, input.Connection, refresh)
+	if err != nil {
+		return errorResult(err), nil, nil
+	}
+	output := &getHealthOutput{
+		Status:            snapshot.Status,
+		DefaultConnection: snapshot.DefaultConnection,
+		Connections:       snapshot.Connections,
+	}
+	return textResult(fmt.Sprintf("Health status is %s across %d connection(s).", output.Status, len(output.Connections))), output, nil
 }
 
 func (s *service) listSchemas(ctx context.Context, _ *mcp.CallToolRequest, input listInput) (*mcp.CallToolResult, *listSchemasOutput, error) {
@@ -464,6 +505,31 @@ func (s *service) readConnectionsResource(_ context.Context, req *mcp.ReadResour
 	}, nil
 }
 
+func (s *service) readHealthResource(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+	if req.Params.URI != "db://health" {
+		return nil, mcp.ResourceNotFoundError(req.Params.URI)
+	}
+	snapshot, err := s.manager.Health(ctx, "", true)
+	if err != nil {
+		return nil, err
+	}
+	body, err := json.Marshal(&getHealthOutput{
+		Status:            snapshot.Status,
+		DefaultConnection: snapshot.DefaultConnection,
+		Connections:       snapshot.Connections,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &mcp.ReadResourceResult{
+		Contents: []*mcp.ResourceContents{{
+			URI:      req.Params.URI,
+			MIMEType: "application/json",
+			Text:     string(body),
+		}},
+	}, nil
+}
+
 func (s *service) readTableResource(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
 	connection, schema, table, err := parseTableResourceURI(req.Params.URI)
 	if err != nil {
@@ -490,7 +556,7 @@ func (s *service) exploreDatabasePrompt(_ context.Context, _ *mcp.GetPromptReque
 			{
 				Role: "user",
 				Content: &mcp.TextContent{Text: fmt.Sprintf(
-					"Use this database server cautiously and prefer discovery before ad hoc SQL. Start with `list_connections` or read the `db://connections` resource to confirm the available databases and note that the default connection is `%s`. Then use `list_schemas`, `list_tables`, `search_columns`, `list_foreign_keys`, `list_indexes`, `get_table_comments`, and `describe_table` to understand structure before calling `execute_query`. If the client supports MCP resources, `db://table/{connection}/{schema}/{table}` gives a compact metadata bundle for one table. Keep queries read-only, prefer explicit columns over `SELECT *`, and keep result sets small with predicates or `maxRows`.",
+					"Use this database server cautiously and prefer discovery before ad hoc SQL. Start with `list_connections` or read the `db://connections` resource to confirm the available databases and note that the default connection is `%s`. If availability is uncertain, call `get_health` or read `db://health` before schema discovery. Then use `list_schemas`, `list_tables`, `search_columns`, `list_foreign_keys`, `list_indexes`, `get_table_comments`, and `describe_table` to understand structure before calling `execute_query`. If the client supports MCP resources, `db://table/{connection}/{schema}/{table}` gives a compact metadata bundle for one table. Keep queries read-only, prefer explicit columns over `SELECT *`, and keep result sets small with predicates or `maxRows`.",
 					defaultConnection,
 				)},
 			},
@@ -524,7 +590,7 @@ func (s *service) inspectTablePrompt(_ context.Context, req *mcp.GetPromptReques
 			{
 				Role: "user",
 				Content: &mcp.TextContent{Text: fmt.Sprintf(
-					"%sInspect table `%s` in this order: 1. If the schema is not certain, use `search_columns` or `list_tables` first. 2. If your client supports resources, prefer reading `db://table/{connection}/{schema}/{table}` for one compact overview. 3. Otherwise call `describe_table`, `list_foreign_keys`, `list_indexes`, and `get_table_comments` to understand structure, joins, and annotations. 4. Use `explain_query` when you need to reason about the access path before running a larger read. 5. Only then write an `execute_query` call with a read-only `SELECT` or `WITH` statement, explicit columns, and a small `maxRows`. 6. If the first result is truncated, narrow the query instead of broadening limits immediately.",
+					"%sInspect table `%s` in this order: 1. If availability is uncertain, call `get_health` or read `db://health` first. 2. If the schema is not certain, use `search_columns` or `list_tables` first. 3. If your client supports resources, prefer reading `db://table/{connection}/{schema}/{table}` for one compact overview. 4. Otherwise call `describe_table`, `list_foreign_keys`, `list_indexes`, and `get_table_comments` to understand structure, joins, and annotations. 5. Use `explain_query` when you need to reason about the access path before running a larger read. 6. Only then write an `execute_query` call with a read-only `SELECT` or `WITH` statement, explicit columns, and a small `maxRows`. 7. If the first result is truncated, narrow the query instead of broadening limits immediately.",
 					contextHint,
 					table,
 				)},
@@ -535,7 +601,7 @@ func (s *service) inspectTablePrompt(_ context.Context, req *mcp.GetPromptReques
 
 func serverInstructions(manager *database.Manager) string {
 	return fmt.Sprintf(
-		"Use this server for safe read-only database exploration. Start with list_connections or db://connections, then use list_schemas, list_tables, search_columns, list_foreign_keys, list_indexes, get_table_comments, and describe_table before execute_query. For one table, the db://table/{connection}/{schema}/{table} resource provides a compact metadata bundle. Use explain_query before expensive reads when supported. The default connection is %q. Keep queries to SELECT or WITH, prefer explicit columns, and keep result sets small.",
+		"Use this server for safe read-only database exploration. Start with list_connections or db://connections. If availability is uncertain, call get_health or read db://health before schema work. Then use list_schemas, list_tables, search_columns, list_foreign_keys, list_indexes, get_table_comments, and describe_table before execute_query. For one table, the db://table/{connection}/{schema}/{table} resource provides a compact metadata bundle. Use explain_query before expensive reads when supported. The default connection is %q. Keep queries to SELECT or WITH, prefer explicit columns, and keep result sets small.",
 		manager.DefaultConnectionName(),
 	)
 }

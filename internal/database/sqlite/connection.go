@@ -34,6 +34,7 @@ type connection struct {
 }
 
 func openConnection(ctx context.Context, cfg config.ConnectionConfig, limits database.Limits) (database.Connection, error) {
+	_ = ctx
 	db, err := sql.Open(driverName, cfg.SQLite.DSN)
 	if err != nil {
 		return nil, err
@@ -41,13 +42,6 @@ func openConnection(ctx context.Context, cfg config.ConnectionConfig, limits dat
 	db.SetConnMaxLifetime(5 * time.Minute)
 	db.SetMaxIdleConns(1)
 	db.SetMaxOpenConns(1)
-
-	pingCtx, cancel := limits.WithTimeout(ctx)
-	defer cancel()
-	if err := db.PingContext(pingCtx); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
 
 	return &connection{
 		name:          cfg.Name,
@@ -63,6 +57,12 @@ func (c *connection) Info() database.ConnectionInfo {
 		Driver:        "sqlite",
 		DefaultSchema: c.defaultSchema,
 	}
+}
+
+func (c *connection) Ping(ctx context.Context) error {
+	pingCtx, cancel := c.limits.WithTimeout(ctx)
+	defer cancel()
+	return c.db.PingContext(pingCtx)
 }
 
 func (c *connection) ListSchemas(ctx context.Context, filter string, limit int) ([]database.SchemaInfo, error) {
