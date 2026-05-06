@@ -4,9 +4,9 @@ Minimal MCP server for databases, implemented in Go. Oracle, PostgreSQL, and SQL
 
 ## Features
 
-- MCP tools: `list_connections`, `get_health`, `list_schemas`, `list_tables`, `search_columns`, `list_foreign_keys`, `list_indexes`, `get_table_comments`, `describe_table`, `execute_query`, `explain_query`
+- MCP tools: `list_connections`, `list_schemas`, `list_tables`, `search_columns`, `list_constraints`, `list_indexes`, `get_table_comments`, `describe_table`, `get_table_ddl`, `execute_query`, `explain_query`
 - MCP prompts: `explore_database`, `inspect_table`
-- MCP resources: `db://connections`, `db://health`, and `db://table/{connection}/{schema}/{table}`
+- MCP resources: `db://connections` and `db://table/{connection}/{schema}/{table}`
 - Server-level MCP instructions to steer clients toward safe schema discovery before ad hoc SQL
 - Oracle support via a pure Go driver, so it can connect directly from a Go binary without Oracle Instant Client
 - PostgreSQL support via `pgx` stdlib
@@ -47,6 +47,8 @@ Supported environment variables for connections:
 - `DBMCP_SQLITE_DSN`, optional `DBMCP_SQLITE_NAME`
 - `DATABASE_URL` is also accepted as the PostgreSQL DSN fallback
 - `SQLITE_URL` is also accepted as the SQLite DSN fallback
+- `DBMCP_HTTP_AUTH_MODE` sets HTTP auth mode: `none` or `bearer`
+- `DBMCP_HTTP_AUTH_TOKEN` sets the static bearer token when auth mode is `bearer`
 
 Default context-protection limits are intentionally conservative:
 
@@ -68,6 +70,16 @@ go run ./cmd/dbmcp -config ./dbmcp.example.json -transport http -http-addr :8080
 
 The streamable HTTP endpoint defaults to `/mcp`.
 
+To enable HTTP bearer auth:
+
+```bash
+export DBMCP_HTTP_AUTH_MODE=bearer
+export DBMCP_HTTP_AUTH_TOKEN='replace-me'
+go run ./cmd/dbmcp -transport http
+```
+
+HTTP auth defaults to `none`. When bearer auth is enabled, only the MCP endpoint is protected. `/healthz` and `/readyz` stay open for probes.
+
 ## Health and degraded startup
 
 This server now starts as long as the config is valid, even if one or more configured databases are unavailable at boot. Each connection is probed independently and exposed with cached health metadata:
@@ -78,8 +90,8 @@ This server now starts as long as the config is valid, even if one or more confi
 
 Use these surfaces to inspect health:
 
-- MCP tool: `get_health`
-- MCP resource: `db://health`
+- MCP tool: `list_connections` with default `refresh=true`
+- MCP resource: `db://connections`
 - HTTP liveness: `/healthz`
 - HTTP readiness: `/readyz`
 
@@ -147,10 +159,10 @@ docker run --rm -p 8081:8081 \
 
 ## Notes
 
-- If availability is uncertain, start with `get_health` or `db://health`.
-- Prefer the discovery flow `list_connections` / `db://connections` -> `list_schemas` -> `list_tables` / `search_columns` -> `list_foreign_keys` / `list_indexes` / `get_table_comments` / `describe_table` before `execute_query`.
-- If the MCP client supports resources, `db://table/{connection}/{schema}/{table}` returns a compact JSON bundle for one table with columns, foreign keys, indexes, and comments.
-- `list_connections` now includes cached health fields for each configured connection.
+- If availability is uncertain, start with `list_connections` or `db://connections`.
+- Prefer the discovery flow `list_connections` / `db://connections` -> `list_schemas` -> `list_tables` / `search_columns` -> `describe_table` / `list_constraints` / `list_indexes` / `get_table_comments` / `get_table_ddl` before `execute_query`.
+- If the MCP client supports resources, `db://table/{connection}/{schema}/{table}` returns a compact JSON bundle for one table with columns, constraints, indexes, and comments.
+- `list_connections` refreshes health by default and returns health fields for each configured connection.
 - Resources are a native MCP concept, not a custom extension in this repo. They are read-oriented endpoints that let the client fetch structured context such as `db://connections` or one table overview without inventing an extra tool call.
 - This server's MCP instructions, prompts, tools, and resources are registered in `internal/mcpserver/server.go`. Clients vary in how visibly they surface prompts/resources/instructions, but the server exports them all.
 - `execute_query` only accepts `SELECT` and `WITH` statements.

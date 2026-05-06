@@ -271,7 +271,7 @@ func buildHTTPHandler(cfg *config.Config, manager *database.Manager, server *mcp
 	}, &mcp.StreamableHTTPOptions{})
 
 	mux := http.NewServeMux()
-	mux.Handle(cfg.Server.HTTPPath, handler)
+	mux.Handle(cfg.Server.HTTPPath, wrapHTTPAuth(cfg, handler))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
@@ -291,6 +291,22 @@ func buildHTTPHandler(cfg *config.Config, manager *database.Manager, server *mcp
 		_ = json.NewEncoder(w).Encode(snapshot)
 	})
 	return mux
+}
+
+func wrapHTTPAuth(cfg *config.Config, next http.Handler) http.Handler {
+	if cfg.Server.HTTPAuth.Mode != config.HTTPAuthBearer {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authz := strings.TrimSpace(r.Header.Get("Authorization"))
+		expected := "Bearer " + cfg.Server.HTTPAuth.Token
+		if authz != expected {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func runBoth(ctx context.Context, cfg *config.Config, manager *database.Manager, server *mcp.Server) error {

@@ -33,6 +33,19 @@ type ServerConfig struct {
 	Transport TransportMode `json:"transport"`
 	HTTPAddr  string        `json:"httpAddr"`
 	HTTPPath  string        `json:"httpPath"`
+	HTTPAuth  HTTPAuthConfig `json:"httpAuth,omitempty"`
+}
+
+type HTTPAuthMode string
+
+const (
+	HTTPAuthNone   HTTPAuthMode = "none"
+	HTTPAuthBearer HTTPAuthMode = "bearer"
+)
+
+type HTTPAuthConfig struct {
+	Mode  HTTPAuthMode `json:"mode,omitempty"`
+	Token string       `json:"token,omitempty"`
 }
 
 type LimitsConfig struct {
@@ -115,6 +128,19 @@ func (c *Config) Validate() error {
 	}
 	if c.Server.HTTPPath == "" {
 		c.Server.HTTPPath = "/mcp"
+	}
+	if c.Server.HTTPAuth.Mode == "" {
+		c.Server.HTTPAuth.Mode = HTTPAuthNone
+	}
+	switch c.Server.HTTPAuth.Mode {
+	case HTTPAuthNone:
+		c.Server.HTTPAuth.Token = ""
+	case HTTPAuthBearer:
+		if strings.TrimSpace(c.Server.HTTPAuth.Token) == "" {
+			return errors.New("server.httpAuth.token is required when server.httpAuth.mode is bearer")
+		}
+	default:
+		return fmt.Errorf("invalid http auth mode %q", c.Server.HTTPAuth.Mode)
 	}
 
 	if c.Limits.DefaultMaxRows <= 0 {
@@ -205,6 +231,9 @@ func defaultConfig() *Config {
 			Transport: TransportStdio,
 			HTTPAddr:  ":8080",
 			HTTPPath:  "/mcp",
+			HTTPAuth: HTTPAuthConfig{
+				Mode: HTTPAuthNone,
+			},
 		},
 		Limits: LimitsConfig{
 			DefaultMaxRows:       5,
@@ -239,6 +268,12 @@ func loadEnvSettings(cfg *Config) {
 	}
 	if value := os.Getenv("DBMCP_HTTP_PATH"); value != "" {
 		cfg.Server.HTTPPath = value
+	}
+	if value := os.Getenv("DBMCP_HTTP_AUTH_MODE"); value != "" {
+		cfg.Server.HTTPAuth.Mode = HTTPAuthMode(value)
+	}
+	if value := os.Getenv("DBMCP_HTTP_AUTH_TOKEN"); value != "" {
+		cfg.Server.HTTPAuth.Token = value
 	}
 	if value := os.Getenv("DBMCP_QUERY_TIMEOUT"); value != "" {
 		cfg.Limits.QueryTimeout = value

@@ -42,7 +42,7 @@ func (s *stubConnection) SearchColumns(context.Context, string, string, int) ([]
 	return nil, nil
 }
 
-func (s *stubConnection) ListForeignKeys(context.Context, string, string, int) ([]ForeignKeyInfo, error) {
+func (s *stubConnection) ListConstraints(context.Context, string, string, int) ([]ConstraintInfo, error) {
 	return nil, nil
 }
 
@@ -55,6 +55,10 @@ func (s *stubConnection) GetTableComments(context.Context, string, string) (*Tab
 }
 
 func (s *stubConnection) DescribeTable(context.Context, string, string) ([]ColumnInfo, error) {
+	return nil, nil
+}
+
+func (s *stubConnection) GetTableDDL(context.Context, string, string) (*TableDDLInfo, error) {
 	return nil, nil
 }
 

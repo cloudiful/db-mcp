@@ -13,10 +13,11 @@ type Connection interface {
 	ListSchemas(ctx context.Context, filter string, limit int) ([]SchemaInfo, error)
 	ListTables(ctx context.Context, schema, filter string, limit int) ([]TableInfo, error)
 	SearchColumns(ctx context.Context, schema, filter string, limit int) ([]ColumnMatchInfo, error)
-	ListForeignKeys(ctx context.Context, schema, table string, limit int) ([]ForeignKeyInfo, error)
+	ListConstraints(ctx context.Context, schema, table string, limit int) ([]ConstraintInfo, error)
 	ListIndexes(ctx context.Context, schema, table string, limit int) ([]IndexInfo, error)
 	GetTableComments(ctx context.Context, schema, table string) (*TableCommentInfo, error)
 	DescribeTable(ctx context.Context, schema, table string) ([]ColumnInfo, error)
+	GetTableDDL(ctx context.Context, schema, table string) (*TableDDLInfo, error)
 	ExecuteQuery(ctx context.Context, query string, maxRows int) (*QueryResult, error)
 	ExplainQuery(ctx context.Context, query string) (*ExplainResult, error)
 	Close() error
@@ -93,6 +94,19 @@ type ForeignKeyInfo struct {
 	DeleteRule       string `json:"deleteRule,omitempty"`
 }
 
+type ConstraintInfo struct {
+	Name              string   `json:"name,omitempty"`
+	Schema            string   `json:"schema"`
+	Table             string   `json:"table"`
+	Type              string   `json:"type"`
+	Columns           []string `json:"columns,omitempty"`
+	ReferencedSchema  string   `json:"referencedSchema,omitempty"`
+	ReferencedTable   string   `json:"referencedTable,omitempty"`
+	ReferencedColumns []string `json:"referencedColumns,omitempty"`
+	CheckExpression   string   `json:"checkExpression,omitempty"`
+	Definition        string   `json:"definition,omitempty"`
+}
+
 type IndexInfo struct {
 	Schema     string   `json:"schema"`
 	Table      string   `json:"table"`
@@ -116,6 +130,14 @@ type TableCommentInfo struct {
 	TableComment string              `json:"tableComment,omitempty"`
 	Columns      []ColumnCommentInfo `json:"columns,omitempty"`
 	Notice       string              `json:"notice,omitempty"`
+}
+
+type TableDDLInfo struct {
+	Schema     string `json:"schema"`
+	Table      string `json:"table"`
+	ObjectType string `json:"objectType"`
+	DDL        string `json:"ddl"`
+	Notice     string `json:"notice,omitempty"`
 }
 
 type ExplainResult struct {

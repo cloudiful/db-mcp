@@ -9,66 +9,6 @@ import (
 	"db/internal/database"
 )
 
-func (c *connection) ListForeignKeys(ctx context.Context, schema, table string, limit int) ([]database.ForeignKeyInfo, error) {
-	limit = c.limits.NormalizeListLimit(limit)
-	if strings.TrimSpace(schema) == "" {
-		schema = c.schema()
-	}
-
-	rows, cleanup, err := c.query(ctx, `
-SELECT
-  fk.constraint_name,
-  fk.table_schema,
-  fk.table_name,
-  fk.column_name,
-  fk.ordinal_position,
-  pk.table_schema AS referenced_table_schema,
-  pk.table_name AS referenced_table_name,
-  pk.column_name AS referenced_column_name,
-  rc.update_rule,
-  rc.delete_rule
-FROM information_schema.key_column_usage fk
-JOIN information_schema.referential_constraints rc
-  ON rc.constraint_schema = fk.constraint_schema
- AND rc.constraint_name = fk.constraint_name
-JOIN information_schema.key_column_usage pk
-  ON pk.constraint_schema = rc.unique_constraint_schema
- AND pk.constraint_name = rc.unique_constraint_name
- AND pk.ordinal_position = fk.position_in_unique_constraint
-WHERE fk.table_schema = COALESCE(NULLIF($1, ''), fk.table_schema)
-  AND fk.table_name = COALESCE(NULLIF($2, ''), fk.table_name)
-ORDER BY fk.table_schema, fk.table_name, fk.constraint_name, fk.ordinal_position
-LIMIT $3`, exactFilter(schema), exactFilter(table), limit)
-	if err != nil {
-		return nil, fmt.Errorf("list postgres foreign keys for schema %q table %q: %w", schema, table, err)
-	}
-	defer cleanup()
-
-	var results []database.ForeignKeyInfo
-	for rows.Next() {
-		var item database.ForeignKeyInfo
-		if err := rows.Scan(
-			&item.ConstraintName,
-			&item.Schema,
-			&item.Table,
-			&item.Column,
-			&item.Position,
-			&item.ReferencedSchema,
-			&item.ReferencedTable,
-			&item.ReferencedColumn,
-			&item.UpdateRule,
-			&item.DeleteRule,
-		); err != nil {
-			return nil, fmt.Errorf("scan postgres foreign key row: %w", err)
-		}
-		results = append(results, item)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate postgres foreign keys: %w", err)
-	}
-	return results, nil
-}
-
 func (c *connection) ListIndexes(ctx context.Context, schema, table string, limit int) ([]database.IndexInfo, error) {
 	limit = c.limits.NormalizeListLimit(limit)
 	if strings.TrimSpace(schema) == "" {

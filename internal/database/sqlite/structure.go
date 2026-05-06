@@ -2,85 +2,11 @@ package sqlite
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"strings"
 
 	"db/internal/database"
 )
-
-func (c *connection) ListForeignKeys(ctx context.Context, schema, table string, limit int) ([]database.ForeignKeyInfo, error) {
-	limit = c.limits.NormalizeListLimit(limit)
-	if strings.TrimSpace(schema) == "" {
-		schema = c.defaultSchema
-	}
-	schema, err := c.validateSchema(ctx, schema)
-	if err != nil {
-		return nil, err
-	}
-
-	tableNames, err := c.listTableNames(ctx, schema, table)
-	if err != nil {
-		return nil, err
-	}
-
-	results := make([]database.ForeignKeyInfo, 0, limit)
-	for _, tableName := range tableNames {
-		query := fmt.Sprintf(`PRAGMA %s.foreign_key_list(%s)`,
-			quoteSQLiteIdentifier(schema),
-			quoteSQLiteString(tableName),
-		)
-		rows, cleanup, err := c.query(ctx, query)
-		if err != nil {
-			return nil, fmt.Errorf("list sqlite foreign keys for %s.%s: %w", schema, tableName, err)
-		}
-
-		for rows.Next() {
-			var (
-				id              int
-				seq             int
-				referencedTable string
-				column          string
-				referencedCol   sql.NullString
-				updateRule      string
-				deleteRule      string
-				matchRule       string
-			)
-			if err := rows.Scan(&id, &seq, &referencedTable, &column, &referencedCol, &updateRule, &deleteRule, &matchRule); err != nil {
-				cleanup()
-				return nil, fmt.Errorf("scan sqlite foreign key row: %w", err)
-			}
-			_ = matchRule
-			item := database.ForeignKeyInfo{
-				ConstraintName:   fmt.Sprintf("fk_%s_%d", tableName, id),
-				Schema:           schema,
-				Table:            tableName,
-				Column:           column,
-				Position:         seq + 1,
-				ReferencedSchema: schema,
-				ReferencedTable:  referencedTable,
-				UpdateRule:       strings.ToUpper(updateRule),
-				DeleteRule:       strings.ToUpper(deleteRule),
-			}
-			if referencedCol.Valid {
-				item.ReferencedColumn = referencedCol.String
-			}
-			results = append(results, item)
-			if len(results) >= limit {
-				cleanup()
-				return results, nil
-			}
-		}
-		if err := rows.Err(); err != nil {
-			cleanup()
-			return nil, fmt.Errorf("iterate sqlite foreign keys for %s.%s: %w", schema, tableName, err)
-		}
-		if err := cleanup(); err != nil {
-			return nil, fmt.Errorf("close sqlite foreign key rows for %s.%s: %w", schema, tableName, err)
-		}
-	}
-	return results, nil
-}
 
 func (c *connection) ListIndexes(ctx context.Context, schema, table string, limit int) ([]database.IndexInfo, error) {
 	limit = c.limits.NormalizeListLimit(limit)

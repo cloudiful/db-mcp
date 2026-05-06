@@ -10,29 +10,19 @@ import (
 	"db/internal/database"
 )
 
-func (s *service) listConnections(_ context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, *listConnectionsOutput, error) {
+func (s *service) listConnections(ctx context.Context, _ *mcp.CallToolRequest, input listConnectionsInput) (*mcp.CallToolResult, *listConnectionsOutput, error) {
+	refresh := true
+	if input.Refresh != nil {
+		refresh = *input.Refresh
+	}
+	if _, err := s.manager.Health(ctx, "", refresh); err != nil {
+		return errorResult(err), nil, nil
+	}
 	output := &listConnectionsOutput{
 		DefaultConnection: s.manager.DefaultConnectionName(),
 		Connections:       s.manager.ConnectionInfos(),
 	}
 	return textResult(fmt.Sprintf("Configured %d connection(s). Default is %s.", len(output.Connections), output.DefaultConnection)), output, nil
-}
-
-func (s *service) getHealth(ctx context.Context, _ *mcp.CallToolRequest, input getHealthInput) (*mcp.CallToolResult, *getHealthOutput, error) {
-	refresh := true
-	if input.Refresh != nil {
-		refresh = *input.Refresh
-	}
-	snapshot, err := s.manager.Health(ctx, input.Connection, refresh)
-	if err != nil {
-		return errorResult(err), nil, nil
-	}
-	output := &getHealthOutput{
-		Status:            snapshot.Status,
-		DefaultConnection: snapshot.DefaultConnection,
-		Connections:       snapshot.Connections,
-	}
-	return textResult(fmt.Sprintf("Health status is %s across %d connection(s).", output.Status, len(output.Connections))), output, nil
 }
 
 func (s *service) listSchemas(ctx context.Context, _ *mcp.CallToolRequest, input listInput) (*mcp.CallToolResult, *listSchemasOutput, error) {
@@ -87,7 +77,7 @@ func (s *service) searchColumns(ctx context.Context, _ *mcp.CallToolRequest, inp
 	return textResult(fmt.Sprintf("Returned %d column match(es) from %s.", len(matches), conn.Info().Name)), output, nil
 }
 
-func (s *service) listForeignKeys(ctx context.Context, _ *mcp.CallToolRequest, input listForeignKeysInput) (*mcp.CallToolResult, *listForeignKeysOutput, error) {
+func (s *service) listConstraints(ctx context.Context, _ *mcp.CallToolRequest, input listConstraintsInput) (*mcp.CallToolResult, *listConstraintsOutput, error) {
 	conn, err := s.manager.Connection(input.Connection)
 	if err != nil {
 		return errorResult(err), nil, nil
@@ -96,16 +86,16 @@ func (s *service) listForeignKeys(ctx context.Context, _ *mcp.CallToolRequest, i
 	if schema == "" {
 		schema = conn.Info().DefaultSchema
 	}
-	foreignKeys, err := conn.ListForeignKeys(ctx, schema, input.Table, input.Limit)
+	constraints, err := conn.ListConstraints(ctx, schema, input.Table, input.Limit)
 	if err != nil {
 		return errorResult(err), nil, nil
 	}
-	foreignKeys, truncated := database.CompactForeignKeys(foreignKeys, s.manager.Limits().HardMaxRows, s.manager.Limits().MaxTotalChars)
-	output := &listForeignKeysOutput{
+	constraints, truncated := database.CompactConstraints(constraints, s.manager.Limits().HardMaxRows, s.manager.Limits().MaxTotalChars, s.manager.Limits().MaxCellChars)
+	output := &listConstraintsOutput{
 		Connection:  conn.Info().Name,
-		ForeignKeys: foreignKeys,
+		Constraints: constraints,
 	}
-	text := fmt.Sprintf("Returned %d foreign key row(s) from %s.", len(foreignKeys), conn.Info().Name)
+	text := fmt.Sprintf("Returned %d constraint row(s) from %s.", len(constraints), conn.Info().Name)
 	if truncated {
 		output.Notice = database.MetadataNotice()
 		text += " " + output.Notice
@@ -190,6 +180,27 @@ func (s *service) describeTable(ctx context.Context, _ *mcp.CallToolRequest, inp
 		text += " " + output.Notice
 	}
 	return textResult(text), output, nil
+}
+
+func (s *service) getTableDDL(ctx context.Context, _ *mcp.CallToolRequest, input getTableDDLInput) (*mcp.CallToolResult, *getTableDDLOutput, error) {
+	conn, err := s.manager.Connection(input.Connection)
+	if err != nil {
+		return errorResult(err), nil, nil
+	}
+	schema := input.Schema
+	if schema == "" {
+		schema = conn.Info().DefaultSchema
+	}
+	ddl, err := conn.GetTableDDL(ctx, schema, input.Table)
+	if err != nil {
+		return errorResult(err), nil, nil
+	}
+	ddl, _ = database.CompactTableDDL(ddl, s.manager.Limits().MaxTotalChars)
+	output := &getTableDDLOutput{
+		Connection: conn.Info().Name,
+		DDL:        ddl,
+	}
+	return textResult(fmt.Sprintf("Loaded %s DDL for %s.%s from %s.", ddl.ObjectType, ddl.Schema, ddl.Table, conn.Info().Name)), output, nil
 }
 
 func (s *service) executeQuery(ctx context.Context, _ *mcp.CallToolRequest, input executeQueryInput) (*mcp.CallToolResult, *executeQueryOutput, error) {

@@ -10,36 +10,6 @@ import (
 )
 
 const (
-	foreignKeysQuery = `
-SELECT fk.constraint_name,
-       fk.owner,
-       fk.table_name,
-       fkc.column_name,
-       fkc.position,
-       pk.owner AS referenced_owner,
-       pk.table_name AS referenced_table_name,
-       pkc.column_name AS referenced_column_name,
-       'NO ACTION' AS update_rule,
-       fk.delete_rule
-FROM (
-  SELECT constraint_name, owner, table_name, r_owner, r_constraint_name, delete_rule
-  FROM all_constraints
-  WHERE constraint_type = 'R'
-    AND %s
-    AND %s
-) fk
-JOIN all_cons_columns fkc
-  ON fkc.owner = fk.owner
- AND fkc.constraint_name = fk.constraint_name
-JOIN all_constraints pk
-  ON pk.owner = fk.r_owner
- AND pk.constraint_name = fk.r_constraint_name
-JOIN all_cons_columns pkc
-  ON pkc.owner = pk.owner
- AND pkc.constraint_name = pk.constraint_name
- AND pkc.position = fkc.position
-ORDER BY fk.owner, fk.table_name, fk.constraint_name, fkc.position`
-
 	indexesQuery = `
 SELECT ai.table_owner,
        ai.table_name,
@@ -71,51 +41,6 @@ FROM all_tab_columns
 WHERE owner = :1 AND table_name = :2
 ORDER BY column_id`
 )
-
-func (c *connection) ListForeignKeys(ctx context.Context, schema, table string, limit int) ([]database.ForeignKeyInfo, error) {
-	limit = c.limits.NormalizeListLimit(limit)
-	schema = c.normalizedSchema(schema)
-	table = normalizedOptionalName(table)
-	ownerFilter, ownerArg := optionalEqPredicate("fk.owner", 1, schema)
-	tableFilter, tableArg := optionalEqPredicate("fk.table_name", 2, table)
-
-	rows, cleanup, err := c.query(ctx, fmt.Sprintf(foreignKeysQuery, ownerFilter, tableFilter), ownerArg, tableArg)
-	if err != nil {
-		return nil, fmt.Errorf("list oracle foreign keys for schema %q table %q: %w", schema, table, err)
-	}
-	defer cleanup()
-
-	results := make([]database.ForeignKeyInfo, 0, limit)
-	for rows.Next() {
-		var (
-			item          database.ForeignKeyInfo
-			deleteRuleVal sql.NullString
-		)
-		if err := rows.Scan(
-			&item.ConstraintName,
-			&item.Schema,
-			&item.Table,
-			&item.Column,
-			&item.Position,
-			&item.ReferencedSchema,
-			&item.ReferencedTable,
-			&item.ReferencedColumn,
-			&item.UpdateRule,
-			&deleteRuleVal,
-		); err != nil {
-			return nil, fmt.Errorf("scan oracle foreign key row: %w", err)
-		}
-		item.DeleteRule = nullStringValue(deleteRuleVal)
-		results = append(results, item)
-		if len(results) >= limit {
-			return results, nil
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate oracle foreign keys: %w", err)
-	}
-	return results, nil
-}
 
 func (c *connection) ListIndexes(ctx context.Context, schema, table string, limit int) ([]database.IndexInfo, error) {
 	limit = c.limits.NormalizeListLimit(limit)

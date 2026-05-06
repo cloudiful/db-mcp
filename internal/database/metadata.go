@@ -50,6 +50,52 @@ func CompactForeignKeys(keys []ForeignKeyInfo, maxItems, maxTotalChars int) ([]F
 	return result, false
 }
 
+func CompactConstraints(constraints []ConstraintInfo, maxItems, maxTotalChars, maxCellChars int) ([]ConstraintInfo, bool) {
+	if maxItems <= 0 {
+		maxItems = len(constraints)
+	}
+	if maxTotalChars <= 0 {
+		maxTotalChars = 1 << 30
+	}
+
+	total := 0
+	truncated := false
+	result := make([]ConstraintInfo, 0, min(len(constraints), maxItems))
+	for _, constraint := range constraints {
+		item := constraint
+		if item.CheckExpression != "" {
+			text, chars, clipped := truncateString(item.CheckExpression, maxCellChars)
+			item.CheckExpression = text
+			total += chars
+			if clipped {
+				truncated = true
+			}
+		}
+		if item.Definition != "" {
+			text, chars, clipped := truncateString(item.Definition, maxCellChars)
+			item.Definition = text
+			total += chars
+			if clipped {
+				truncated = true
+			}
+		}
+		entryChars := len(item.Name) + len(item.Schema) + len(item.Table) + len(item.Type) +
+			len(item.ReferencedSchema) + len(item.ReferencedTable) + 24
+		for _, column := range item.Columns {
+			entryChars += len(column)
+		}
+		for _, column := range item.ReferencedColumns {
+			entryChars += len(column)
+		}
+		if len(result) >= maxItems || total+entryChars > maxTotalChars {
+			return result, true
+		}
+		total += entryChars
+		result = append(result, item)
+	}
+	return result, truncated
+}
+
 func CompactIndexes(indexes []IndexInfo, maxItems, maxTotalChars, maxCellChars int) ([]IndexInfo, bool) {
 	if maxItems <= 0 {
 		maxItems = len(indexes)
@@ -133,6 +179,22 @@ func CompactTableComments(comments *TableCommentInfo, maxItems, maxTotalChars, m
 		result.Notice = AppendNotice(result.Notice, metadataNotice)
 	}
 	return &result, truncated
+}
+
+func CompactTableDDL(ddl *TableDDLInfo, maxCellChars int) (*TableDDLInfo, bool) {
+	if ddl == nil {
+		return nil, false
+	}
+	result := *ddl
+	if result.DDL == "" {
+		return &result, false
+	}
+	text, _, clipped := truncateString(result.DDL, maxCellChars)
+	result.DDL = text
+	if clipped {
+		result.Notice = AppendNotice(result.Notice, metadataNotice)
+	}
+	return &result, clipped
 }
 
 func AppendNotice(existing, notice string) string {

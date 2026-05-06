@@ -2,6 +2,10 @@ package mcpserver
 
 import "db/internal/database"
 
+type listConnectionsInput struct {
+	Refresh *bool `json:"refresh,omitempty" jsonschema:"optional; defaults to true to probe current connection health before returning"`
+}
+
 type listInput struct {
 	Connection string `json:"connection,omitempty" jsonschema:"optional connection name; default uses the first configured connection"`
 	Schema     string `json:"schema,omitempty" jsonschema:"schema name; when omitted, tools use the connection's default schema when applicable"`
@@ -22,7 +26,7 @@ type searchColumnsInput struct {
 	Limit      int    `json:"limit,omitempty" jsonschema:"optional result limit; clamped by the server"`
 }
 
-type listForeignKeysInput struct {
+type listConstraintsInput struct {
 	Connection string `json:"connection,omitempty" jsonschema:"optional connection name; default uses the first configured connection"`
 	Schema     string `json:"schema,omitempty" jsonschema:"schema name; defaults to the connection's default schema"`
 	Table      string `json:"table,omitempty" jsonschema:"optional table name; when omitted, list foreign keys across the schema"`
@@ -42,6 +46,12 @@ type getTableCommentsInput struct {
 	Table      string `json:"table" jsonschema:"table or view name"`
 }
 
+type getTableDDLInput struct {
+	Connection string `json:"connection,omitempty" jsonschema:"optional connection name; default uses the first configured connection"`
+	Schema     string `json:"schema,omitempty" jsonschema:"schema name; defaults to the connection's default schema"`
+	Table      string `json:"table" jsonschema:"table or view name"`
+}
+
 type executeQueryInput struct {
 	Connection string `json:"connection,omitempty" jsonschema:"optional connection name; default uses the first configured connection"`
 	SQL        string `json:"sql" jsonschema:"read-only SELECT or WITH query"`
@@ -51,11 +61,6 @@ type executeQueryInput struct {
 type explainQueryInput struct {
 	Connection string `json:"connection,omitempty" jsonschema:"optional connection name; default uses the first configured connection"`
 	SQL        string `json:"sql" jsonschema:"read-only SELECT or WITH query to explain"`
-}
-
-type getHealthInput struct {
-	Connection string `json:"connection,omitempty" jsonschema:"optional connection name; when omitted, return all configured connections"`
-	Refresh    *bool  `json:"refresh,omitempty" jsonschema:"optional; defaults to true to probe the current health before returning"`
 }
 
 type listConnectionsOutput struct {
@@ -86,9 +91,9 @@ type searchColumnsOutput struct {
 	Matches    []database.ColumnMatchInfo `json:"matches"`
 }
 
-type listForeignKeysOutput struct {
+type listConstraintsOutput struct {
 	Connection  string                    `json:"connection"`
-	ForeignKeys []database.ForeignKeyInfo `json:"foreignKeys"`
+	Constraints []database.ConstraintInfo `json:"constraints"`
 	Notice      string                    `json:"notice,omitempty"`
 }
 
@@ -103,6 +108,11 @@ type getTableCommentsOutput struct {
 	Comments   *database.TableCommentInfo `json:"comments"`
 }
 
+type getTableDDLOutput struct {
+	Connection string                 `json:"connection"`
+	DDL        *database.TableDDLInfo `json:"ddl"`
+}
+
 type executeQueryOutput struct {
 	Connection string                `json:"connection"`
 	Result     *database.QueryResult `json:"result"`
@@ -113,19 +123,13 @@ type explainQueryOutput struct {
 	Explain    *database.ExplainResult `json:"explain"`
 }
 
-type getHealthOutput struct {
-	Status            string                      `json:"status"`
-	DefaultConnection string                      `json:"defaultConnection"`
-	Connections       []database.ConnectionHealth `json:"connections"`
-}
-
 type tableResourceOutput struct {
-	Connection  string                     `json:"connection"`
-	Schema      string                     `json:"schema"`
-	Table       string                     `json:"table"`
-	Columns     []database.ColumnInfo      `json:"columns"`
-	ForeignKeys []database.ForeignKeyInfo  `json:"foreignKeys"`
-	Indexes     []database.IndexInfo       `json:"indexes"`
-	Comments    *database.TableCommentInfo `json:"comments"`
-	Notice      string                     `json:"notice,omitempty"`
+	Connection  string                      `json:"connection"`
+	Schema      string                      `json:"schema"`
+	Table       string                      `json:"table"`
+	Columns     []database.ColumnInfo       `json:"columns"`
+	Constraints []database.ConstraintInfo   `json:"constraints"`
+	Indexes     []database.IndexInfo        `json:"indexes"`
+	Comments    *database.TableCommentInfo  `json:"comments"`
+	Notice      string                      `json:"notice,omitempty"`
 }

@@ -28,11 +28,6 @@ func New(cfg *config.Config, manager *database.Manager) *mcp.Server {
 	}, svc.listConnections)
 
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "get_health",
-		Description: "Return current database availability and health details for one or all configured connections.",
-	}, svc.getHealth)
-
-	mcp.AddTool(server, &mcp.Tool{
 		Name:        "list_schemas",
 		Description: "List visible schemas for a connection.",
 	}, svc.listSchemas)
@@ -48,14 +43,14 @@ func New(cfg *config.Config, manager *database.Manager) *mcp.Server {
 	}, svc.searchColumns)
 
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "list_foreign_keys",
-		Description: "List visible foreign key relationships for a schema or table.",
-	}, svc.listForeignKeys)
-
-	mcp.AddTool(server, &mcp.Tool{
 		Name:        "list_indexes",
 		Description: "List visible indexes for a schema or table.",
 	}, svc.listIndexes)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "list_constraints",
+		Description: "List visible table constraints for a schema or table.",
+	}, svc.listConstraints)
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_table_comments",
@@ -66,6 +61,11 @@ func New(cfg *config.Config, manager *database.Manager) *mcp.Server {
 		Name:        "describe_table",
 		Description: "Describe table or view columns.",
 	}, svc.describeTable)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "get_table_ddl",
+		Description: "Return a table or view DDL definition in a normalized read-only form.",
+	}, svc.getTableDDL)
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "execute_query",
@@ -85,19 +85,11 @@ func New(cfg *config.Config, manager *database.Manager) *mcp.Server {
 		MIMEType:    "application/json",
 	}, svc.readConnectionsResource)
 
-	server.AddResource(&mcp.Resource{
-		URI:         "db://health",
-		Name:        "health",
-		Title:       "Database Health",
-		Description: "Current availability and health details for configured database connections.",
-		MIMEType:    "application/json",
-	}, svc.readHealthResource)
-
 	server.AddResourceTemplate(&mcp.ResourceTemplate{
 		URITemplate: "db://table/{connection}/{schema}/{table}",
 		Name:        "table_overview",
 		Title:       "Table Overview",
-		Description: "Combined metadata for a table including columns, foreign keys, indexes, and comments.",
+		Description: "Combined metadata for a table including columns, constraints, indexes, and comments.",
 		MIMEType:    "application/json",
 	}, svc.readTableResource)
 

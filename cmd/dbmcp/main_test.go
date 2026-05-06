@@ -41,7 +41,7 @@ func (s *healthTestConnection) SearchColumns(context.Context, string, string, in
 	return nil, nil
 }
 
-func (s *healthTestConnection) ListForeignKeys(context.Context, string, string, int) ([]database.ForeignKeyInfo, error) {
+func (s *healthTestConnection) ListConstraints(context.Context, string, string, int) ([]database.ConstraintInfo, error) {
 	return nil, nil
 }
 
@@ -54,6 +54,10 @@ func (s *healthTestConnection) GetTableComments(context.Context, string, string)
 }
 
 func (s *healthTestConnection) DescribeTable(context.Context, string, string) ([]database.ColumnInfo, error) {
+	return nil, nil
+}
+
+func (s *healthTestConnection) GetTableDDL(context.Context, string, string) (*database.TableDDLInfo, error) {
 	return nil, nil
 }
 
@@ -147,6 +151,35 @@ func TestReadyzReturnsUpAndDegradedAndDown(t *testing.T) {
 				t.Fatalf("unexpected readyz status: got=%q want=%q", body.Status, tt.wantStatus)
 			}
 		})
+	}
+}
+
+func TestHTTPBearerAuthProtectsMCPOnly(t *testing.T) {
+	t.Parallel()
+
+	manager := newHTTPTestManager(t, "auth")
+	handler := buildHTTPHandler(&config.Config{
+		Server: config.ServerConfig{
+			HTTPPath: "/mcp",
+			HTTPAuth: config.HTTPAuthConfig{
+				Mode:  config.HTTPAuthBearer,
+				Token: "secret-token",
+			},
+		},
+	}, manager, mcp.NewServer(&mcp.Implementation{Name: "test", Version: "v0.0.1"}, nil))
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for missing bearer token, got %d", res.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	res = httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected open healthz, got %d", res.Code)
 	}
 }
 

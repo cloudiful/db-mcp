@@ -42,7 +42,7 @@ func (s *stubUnavailableConnection) SearchColumns(context.Context, string, strin
 	return nil, nil
 }
 
-func (s *stubUnavailableConnection) ListForeignKeys(context.Context, string, string, int) ([]database.ForeignKeyInfo, error) {
+func (s *stubUnavailableConnection) ListConstraints(context.Context, string, string, int) ([]database.ConstraintInfo, error) {
 	return nil, nil
 }
 
@@ -55,6 +55,10 @@ func (s *stubUnavailableConnection) GetTableComments(context.Context, string, st
 }
 
 func (s *stubUnavailableConnection) DescribeTable(context.Context, string, string) ([]database.ColumnInfo, error) {
+	return nil, nil
+}
+
+func (s *stubUnavailableConnection) GetTableDDL(context.Context, string, string) (*database.TableDDLInfo, error) {
 	return nil, nil
 }
 
@@ -163,27 +167,36 @@ func TestSearchColumnsFindsMatchesInSQLite(t *testing.T) {
 	}
 }
 
-func TestListForeignKeysFindsRelationshipsInSQLite(t *testing.T) {
+func TestListConstraintsFindsRelationshipsInSQLite(t *testing.T) {
 	t.Parallel()
 
 	_, manager := newSQLiteTestManager(t)
 	defer manager.Close()
 
 	svc := &service{manager: manager}
-	_, output, err := svc.listForeignKeys(context.Background(), nil, listForeignKeysInput{
+	_, output, err := svc.listConstraints(context.Background(), nil, listConstraintsInput{
 		Connection: "sqlite-test",
 		Schema:     "main",
 		Table:      "purchase_order",
 	})
 	if err != nil {
-		t.Fatalf("list foreign keys: %v", err)
+		t.Fatalf("list constraints: %v", err)
 	}
-	if len(output.ForeignKeys) != 1 {
-		t.Fatalf("expected one foreign key row, got %#v", output.ForeignKeys)
+	if len(output.Constraints) == 0 {
+		t.Fatalf("expected at least one constraint row, got %#v", output.Constraints)
 	}
-	got := output.ForeignKeys[0]
-	if got.Table != "purchase_order" || got.Column != "user_profile_id" || got.ReferencedTable != "user_profile" || got.ReferencedColumn != "id" {
-		t.Fatalf("unexpected foreign key %#v", got)
+	foundFK := false
+	for _, got := range output.Constraints {
+		if got.Type != "FOREIGN KEY" {
+			continue
+		}
+		foundFK = true
+		if got.Table != "purchase_order" || len(got.Columns) != 1 || got.Columns[0] != "user_profile_id" || got.ReferencedTable != "user_profile" || len(got.ReferencedColumns) != 1 || got.ReferencedColumns[0] != "id" {
+			t.Fatalf("unexpected foreign key %#v", got)
+		}
+	}
+	if !foundFK {
+		t.Fatalf("expected foreign key in constraints %#v", output.Constraints)
 	}
 }
 
@@ -280,11 +293,11 @@ func TestServerRegistersInstructionsAndPrompts(t *testing.T) {
 	if initResult == nil {
 		t.Fatalf("expected initialize result")
 	}
-	if !strings.Contains(initResult.Instructions, "search_columns") || !strings.Contains(initResult.Instructions, "list_foreign_keys") {
+	if !strings.Contains(initResult.Instructions, "search_columns") || !strings.Contains(initResult.Instructions, "list_constraints") {
 		t.Fatalf("expected instructions to mention search_columns, got %q", initResult.Instructions)
 	}
-	if !strings.Contains(initResult.Instructions, "get_health") || !strings.Contains(initResult.Instructions, "db://health") {
-		t.Fatalf("expected instructions to mention health checks, got %q", initResult.Instructions)
+	if strings.Contains(initResult.Instructions, "get_health") || strings.Contains(initResult.Instructions, "db://health") {
+		t.Fatalf("expected instructions to remove legacy health checks, got %q", initResult.Instructions)
 	}
 	if !strings.Contains(initResult.Instructions, "db://table/{connection}/{schema}/{table}") {
 		t.Fatalf("expected instructions to mention table resource, got %q", initResult.Instructions)
@@ -312,7 +325,7 @@ func TestServerRegistersInstructionsAndPrompts(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected text content, got %T", result.Messages[0].Content)
 	}
-	if !strings.Contains(content.Text, "describe_table") || !strings.Contains(content.Text, "list_foreign_keys") || !strings.Contains(content.Text, "execute_query") {
+	if !strings.Contains(content.Text, "describe_table") || !strings.Contains(content.Text, "list_constraints") || !strings.Contains(content.Text, "execute_query") {
 		t.Fatalf("unexpected prompt text %q", content.Text)
 	}
 
@@ -320,10 +333,10 @@ func TestServerRegistersInstructionsAndPrompts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list resources: %v", err)
 	}
-	if len(resources.Resources) != 2 {
+	if len(resources.Resources) != 1 {
 		t.Fatalf("unexpected resources %#v", resources.Resources)
 	}
-	if resources.Resources[0].URI != "db://connections" || resources.Resources[1].URI != "db://health" {
+	if resources.Resources[0].URI != "db://connections" {
 		t.Fatalf("unexpected resources %#v", resources.Resources)
 	}
 
@@ -348,18 +361,12 @@ func TestServerRegistersInstructionsAndPrompts(t *testing.T) {
 		t.Fatalf("expected compact json resource, got %q", tableResource.Contents[0].Text)
 	}
 
-	healthResource, err := session.ReadResource(context.Background(), &mcp.ReadResourceParams{
-		URI: "db://health",
-	})
-	if err != nil {
-		t.Fatalf("read health resource: %v", err)
-	}
-	if len(healthResource.Contents) != 1 || !strings.Contains(healthResource.Contents[0].Text, `"status":"up"`) {
-		t.Fatalf("unexpected health resource %#v", healthResource.Contents)
+	if !strings.Contains(tableResource.Contents[0].Text, "\"constraints\"") {
+		t.Fatalf("expected constraints in table resource, got %#v", tableResource.Contents)
 	}
 }
 
-func TestGetHealthReportsMixedAvailability(t *testing.T) {
+func TestListConnectionsReportsMixedAvailability(t *testing.T) {
 	t.Parallel()
 
 	healthyDriver := "mcpserver-health-healthy"
@@ -387,15 +394,19 @@ func TestGetHealthReportsMixedAvailability(t *testing.T) {
 
 	svc := &service{manager: manager}
 	refresh := false
-	_, output, err := svc.getHealth(context.Background(), nil, getHealthInput{Refresh: &refresh})
+	_, output, err := svc.listConnections(context.Background(), nil, listConnectionsInput{Refresh: &refresh})
 	if err != nil {
-		t.Fatalf("get health: %v", err)
-	}
-	if output.Status != database.StatusDegraded {
-		t.Fatalf("expected degraded health, got %#v", output)
+		t.Fatalf("list connections: %v", err)
 	}
 	if len(output.Connections) != 2 {
 		t.Fatalf("expected two connections, got %#v", output.Connections)
+	}
+	statusByName := map[string]string{}
+	for _, conn := range output.Connections {
+		statusByName[conn.Name] = conn.Status
+	}
+	if statusByName["healthy"] != database.StatusUp || statusByName["down"] != database.StatusDown {
+		t.Fatalf("unexpected connection statuses %#v", output.Connections)
 	}
 }
 

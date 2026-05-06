@@ -12,38 +12,16 @@ import (
 	"db/internal/database"
 )
 
-func (s *service) readConnectionsResource(_ context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+func (s *service) readConnectionsResource(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
 	if req.Params.URI != "db://connections" {
 		return nil, mcp.ResourceNotFoundError(req.Params.URI)
+	}
+	if _, err := s.manager.Health(ctx, "", true); err != nil {
+		return nil, err
 	}
 	body, err := json.Marshal(&listConnectionsOutput{
 		DefaultConnection: s.manager.DefaultConnectionName(),
 		Connections:       s.manager.ConnectionInfos(),
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &mcp.ReadResourceResult{
-		Contents: []*mcp.ResourceContents{{
-			URI:      req.Params.URI,
-			MIMEType: "application/json",
-			Text:     string(body),
-		}},
-	}, nil
-}
-
-func (s *service) readHealthResource(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
-	if req.Params.URI != "db://health" {
-		return nil, mcp.ResourceNotFoundError(req.Params.URI)
-	}
-	snapshot, err := s.manager.Health(ctx, "", true)
-	if err != nil {
-		return nil, err
-	}
-	body, err := json.Marshal(&getHealthOutput{
-		Status:            snapshot.Status,
-		DefaultConnection: snapshot.DefaultConnection,
-		Connections:       snapshot.Connections,
 	})
 	if err != nil {
 		return nil, err
@@ -90,11 +68,11 @@ func (s *service) buildTableResource(ctx context.Context, connectionName, schema
 	}
 	sectionBudget := max(256, limits.MaxTotalChars/4)
 	columns, columnsTruncated := database.CompactColumns(columns, limits.HardMaxRows, sectionBudget)
-	foreignKeys, err := conn.ListForeignKeys(ctx, schema, table, limits.HardMaxRows)
+	constraints, err := conn.ListConstraints(ctx, schema, table, limits.HardMaxRows)
 	if err != nil {
 		return "", err
 	}
-	foreignKeys, foreignKeysTruncated := database.CompactForeignKeys(foreignKeys, limits.HardMaxRows, sectionBudget)
+	constraints, constraintsTruncated := database.CompactConstraints(constraints, limits.HardMaxRows, sectionBudget, limits.MaxCellChars)
 	indexes, err := conn.ListIndexes(ctx, schema, table, limits.HardMaxRows)
 	if err != nil {
 		return "", err
@@ -106,7 +84,7 @@ func (s *service) buildTableResource(ctx context.Context, connectionName, schema
 	}
 	comments, commentsTruncated := database.CompactTableComments(comments, limits.HardMaxRows, sectionBudget, limits.MaxCellChars)
 	notice := ""
-	if columnsTruncated || foreignKeysTruncated || indexesTruncated || commentsTruncated {
+	if columnsTruncated || constraintsTruncated || indexesTruncated || commentsTruncated {
 		notice = database.MetadataNotice()
 	}
 	body, err := json.Marshal(&tableResourceOutput{
@@ -114,7 +92,7 @@ func (s *service) buildTableResource(ctx context.Context, connectionName, schema
 		Schema:      schema,
 		Table:       table,
 		Columns:     columns,
-		ForeignKeys: foreignKeys,
+		Constraints: constraints,
 		Indexes:     indexes,
 		Comments:    comments,
 		Notice:      notice,
