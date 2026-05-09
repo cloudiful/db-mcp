@@ -3,8 +3,6 @@ WORKDIR /app
 
 RUN cargo install cargo-chef
 
-COPY .cargo ./.cargo
-
 FROM chef AS planner
 COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
