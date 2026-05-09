@@ -22,6 +22,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 
 FROM dockerhub.cloud1ful.com/library/debian:trixie-slim AS runtime
 
+COPY apt-cloud1ful-insecure.conf /etc/apt/apt.conf.d/99apt-cloud1ful-insecure
 COPY debian.sources /etc/apt/sources.list.d/debian.sources
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
