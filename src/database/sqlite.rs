@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use sqlx::{AnyPool, Row};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use super::*;
 
@@ -9,7 +9,7 @@ pub struct SQLiteConnection {
     name: String,
     limits: Limits,
     pool: AnyPool,
-    default_schema: Arc<tokio::sync::Mutex<String>>,
+    default_schema: Arc<RwLock<String>>,
 }
 
 impl SQLiteConnection {
@@ -19,12 +19,15 @@ impl SQLiteConnection {
             name,
             limits,
             pool,
-            default_schema: Arc::new(tokio::sync::Mutex::new("main".to_string())),
+            default_schema: Arc::new(RwLock::new("main".to_string())),
         })
     }
 
     async fn schema(&self) -> String {
-        self.default_schema.lock().await.clone()
+        self.default_schema
+            .read()
+            .expect("default_schema poisoned")
+            .clone()
     }
 }
 
@@ -34,7 +37,11 @@ impl DatabaseConnection for SQLiteConnection {
         ConnectionInfo {
             name: self.name.clone(),
             driver: "sqlite".to_string(),
-            default_schema: self.default_schema.blocking_lock().clone(),
+            default_schema: self
+                .default_schema
+                .read()
+                .expect("default_schema poisoned")
+                .clone(),
             status: "down".to_string(),
             available: false,
             last_checked_at: None,

@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use axum::{Router, routing::get, middleware};
+use axum::{Json, Router, routing::get, middleware};
 use cloudiful_server::{ServerConfig as BaseServerConfig, axum::Server as HttpServer};
 use std::sync::Arc;
 use tracing::{info, warn};
@@ -90,7 +90,9 @@ async fn healthz() -> &'static str {
     "ok"
 }
 
-async fn readyz(State(state): axum::extract::State<Arc<mcp::AppState>>) -> axum::response::Response {
+async fn readyz(
+    State(state): State<Arc<mcp::AppState>>,
+) -> Result<(axum::http::StatusCode, Json<database::HealthSnapshot>), (axum::http::StatusCode, String)> {
     match state.manager.health(None, true).await {
         Ok(snapshot) => {
             let code = if snapshot.status == "down" {
@@ -98,13 +100,9 @@ async fn readyz(State(state): axum::extract::State<Arc<mcp::AppState>>) -> axum:
             } else {
                 axum::http::StatusCode::OK
             };
-            (code, axum::Json(snapshot)).into_response()
+            Ok((code, Json(snapshot)))
         }
-        Err(err) => (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            err.to_string(),
-        )
-            .into_response(),
+        Err(err) => Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, err.to_string())),
     }
 }
 
@@ -203,5 +201,4 @@ fn redact_postgres_dsn(raw: &str) -> String {
         .join(" ")
 }
 
-use axum::response::IntoResponse;
 use axum::extract::State;

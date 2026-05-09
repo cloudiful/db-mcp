@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use sqlx::{AnyPool, Row};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use super::*;
 
@@ -10,7 +10,7 @@ pub struct PostgresConnection {
     config: config::PostgresConfig,
     limits: Limits,
     pool: AnyPool,
-    default_schema: Arc<tokio::sync::Mutex<String>>,
+    default_schema: Arc<RwLock<String>>,
 }
 
 impl PostgresConnection {
@@ -26,17 +26,24 @@ impl PostgresConnection {
             config,
             limits,
             pool,
-            default_schema: Arc::new(tokio::sync::Mutex::new(default_schema)),
+            default_schema: Arc::new(RwLock::new(default_schema)),
         })
     }
 
     async fn schema(&self) -> Result<String> {
-        Ok(self.default_schema.lock().await.clone())
+        Ok(self
+            .default_schema
+            .read()
+            .expect("default_schema poisoned")
+            .clone())
     }
 
     async fn refresh_schema(&self) -> Result<()> {
         if !self.config.schema.trim().is_empty() {
-            *self.default_schema.lock().await = self.config.schema.trim().to_string();
+            *self
+                .default_schema
+                .write()
+                .expect("default_schema poisoned") = self.config.schema.trim().to_string();
             return Ok(());
         }
         let schema: Option<String> = sqlx::query_scalar("select current_schema()")
@@ -44,7 +51,10 @@ impl PostgresConnection {
             .await
             .context("current_schema")?;
         if let Some(schema) = schema {
-            *self.default_schema.lock().await = schema;
+            *self
+                .default_schema
+                .write()
+                .expect("default_schema poisoned") = schema;
         }
         Ok(())
     }
@@ -58,7 +68,8 @@ impl DatabaseConnection for PostgresConnection {
             driver: "postgres".to_string(),
             default_schema: self
                 .default_schema
-                .blocking_lock()
+                .read()
+                .expect("default_schema poisoned")
                 .clone(),
             status: "down".to_string(),
             available: false,
@@ -81,7 +92,7 @@ impl DatabaseConnection for PostgresConnection {
         let filter = filter.unwrap_or("");
         let rows = sqlx::query(
             r#"
-            select schema_name
+            select schema_name::text as schema_name
             from information_schema.schemata
             where schema_name not like 'pg_%'
               and schema_name <> 'information_schema'
@@ -113,7 +124,9 @@ impl DatabaseConnection for PostgresConnection {
         let filter = filter.unwrap_or("");
         let rows = sqlx::query(
             r#"
-            select table_schema, table_name, table_type
+            select table_schema::text as table_schema,
+                   table_name::text as table_name,
+                   table_type::text as table_type
             from information_schema.tables
             where table_schema = $1
               and lower(table_name) like lower($2)
@@ -148,7 +161,11 @@ impl DatabaseConnection for PostgresConnection {
         let filter = filter.unwrap_or("");
         let rows = sqlx::query(
             r#"
-            select table_schema, table_name, column_name, data_type, ordinal_position
+            select table_schema::text as table_schema,
+                   table_name::text as table_name,
+                   column_name::text as column_name,
+                   data_type::text as data_type,
+                   ordinal_position
             from information_schema.columns
             where table_schema = $1
               and lower(column_name) like lower($2)
@@ -185,9 +202,9 @@ impl DatabaseConnection for PostgresConnection {
         let rows = sqlx::query(
             r#"
             select
-                c.conname as name,
-                n.nspname as schema,
-                rel.relname as table_name,
+                c.conname::text as name,
+                n.nspname::text as schema,
+                rel.relname::text as table_name,
                 case c.contype
                     when 'p' then 'PRIMARY KEY'
                     when 'u' then 'UNIQUE'
@@ -195,9 +212,9 @@ impl DatabaseConnection for PostgresConnection {
                     when 'c' then 'CHECK'
                     else c.contype::text
                 end as constraint_type,
-                pg_get_constraintdef(c.oid, true) as definition,
-                case when c.confrelid <> 0 then nconf.nspname end as referenced_schema,
-                case when c.confrelid <> 0 then relconf.relname end as referenced_table
+                pg_get_constraintdef(c.oid, true)::text as definition,
+                case when c.confrelid <> 0 then nconf.nspname::text end as referenced_schema,
+                case when c.confrelid <> 0 then relconf.relname::text end as referenced_table
             from pg_constraint c
             join pg_class rel on rel.oid = c.conrelid
             join pg_namespace n on n.oid = rel.relnamespace
@@ -242,7 +259,10 @@ impl DatabaseConnection for PostgresConnection {
         let limit = self.limits.normalize_list_limit(limit);
         let rows = sqlx::query(
             r#"
-            select schemaname, tablename, indexname, indexdef
+            select schemaname::text as schemaname,
+                   tablename::text as tablename,
+                   indexname::text as indexname,
+                   indexdef::text as indexdef
             from pg_indexes
             where schemaname = $1 and tablename = $2
             order by indexname
@@ -298,7 +318,7 @@ impl DatabaseConnection for PostgresConnection {
         .flatten();
         let rows = sqlx::query(
             r#"
-            select a.attname as name, d.description as comment
+            select a.attname::text as name, d.description::text as comment
             from pg_attribute a
             join pg_class c on c.oid = a.attrelid
             join pg_namespace n on n.oid = c.relnamespace
@@ -330,7 +350,10 @@ impl DatabaseConnection for PostgresConnection {
         let schema = schema.map(str::to_string).unwrap_or(self.schema().await?);
         let rows = sqlx::query(
             r#"
-            select column_name, data_type, is_nullable, ordinal_position,
+            select column_name::text as column_name,
+                   data_type::text as data_type,
+                   is_nullable::text as is_nullable,
+                   ordinal_position,
                    character_maximum_length, numeric_precision, numeric_scale
             from information_schema.columns
             where table_schema = $1 and table_name = $2

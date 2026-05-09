@@ -13,8 +13,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sqlx::{AnyPool, Row, Column, TypeInfo, ValueRef, any::AnyRow};
-use std::{collections::BTreeMap, sync::Arc, time::Instant};
-use tokio::sync::Mutex;
+use std::{collections::BTreeMap, sync::{Arc, Mutex, Once}, time::Instant};
 
 use crate::{config, readonly_sql};
 
@@ -262,8 +261,11 @@ pub struct Manager {
     limits: Limits,
 }
 
+static SQLX_ANY_DRIVERS: Once = Once::new();
+
 impl Manager {
     pub async fn new(cfg: &config::Config) -> Result<Self> {
+        SQLX_ANY_DRIVERS.call_once(sqlx::any::install_default_drivers);
         let limits = Limits::from_config(cfg)?;
         let mut slots = BTreeMap::new();
         for conn_cfg in &cfg.connections {
@@ -308,10 +310,7 @@ impl Manager {
     pub fn connection_infos(&self) -> Vec<ConnectionInfo> {
         self.slots
             .values()
-            .map(|slot| {
-                let health = slot.health.blocking_lock().clone();
-                health
-            })
+            .map(|slot| slot.health.lock().expect("health poisoned").clone())
             .collect()
     }
 
@@ -337,10 +336,10 @@ impl Manager {
                 .slots
                 .get(name)
                 .with_context(|| format!("connection {name:?} not found"))?;
-            connections.push(slot.health.lock().await.clone());
+            connections.push(slot.health.lock().expect("health poisoned").clone());
         } else {
             for slot in self.slots.values() {
-                connections.push(slot.health.lock().await.clone());
+                connections.push(slot.health.lock().expect("health poisoned").clone());
             }
         }
         connections.sort_by(|a, b| a.name.cmp(&b.name));
@@ -372,15 +371,17 @@ impl Manager {
 
     async fn refresh_slot(slot: Slot) {
         let now = chrono_like_now();
-        let mut health = slot.health.lock().await;
+        let ping_result = slot.conn.ping().await;
+        let info = slot.conn.info();
+        let mut health = slot.health.lock().expect("health poisoned");
         health.last_checked_at = Some(now.clone());
-        match slot.conn.ping().await {
+        match ping_result {
             Ok(()) => {
                 health.available = true;
                 health.status = "up".to_string();
                 health.last_successful_at = Some(now);
                 health.last_error = None;
-                health.default_schema = slot.conn.info().default_schema;
+                health.default_schema = info.default_schema;
             }
             Err(err) => {
                 health.available = false;
