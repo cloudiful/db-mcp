@@ -1,8 +1,10 @@
 .git
 .gitignore
+.gitea
 .gocache
 .gomodcache
 dbmcp
+target
 *.log
 *.out
 *.test

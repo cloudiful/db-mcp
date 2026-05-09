@@ -20,6 +20,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.TOKEN_GTCR }}
           context: .
+          file: ./Dockerfile
           push: true
           tags: gitea.cloud1ful.com/${{ gitea.repository }}:latest
-          cache-from: type=registry,ref=gitea.cloud1ful.com/${{ gitea.repository }}:latest
+          cache-from: type=registry,ref=gitea.cloud1ful.com/${{ gitea.repository }}:buildcache
+          cache-to: type=registry,ref=gitea.cloud1ful.com/${{ gitea.repository }}:buildcache,mode=max

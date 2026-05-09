@@ -1,22 +1,34 @@
-# syntax=docker/dockerfile:1.7
+FROM gitea.cloud1ful.com/docker/rust-ci AS chef
+WORKDIR /app
 
-FROM dockerhub.cloud1ful.com/library/rust:1.89-bookworm AS builder
-WORKDIR /src
+RUN cargo install cargo-chef
 
-COPY Cargo.toml Cargo.lock ./
-COPY src ./src
+COPY .cargo ./.cargo
 
-RUN cargo build --release --locked
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
 
-FROM dockerhub.cloud1ful.com/library/debian:bookworm-slim
+FROM chef AS builder
+COPY --from=planner /app/recipe.json recipe.json
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    cargo chef cook --release --recipe-path recipe.json
+
+COPY . .
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    cargo build --release --locked --bin dbmcp
+
+FROM dockerhub.cloud1ful.com/library/debian:trixie-slim AS runtime
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY --from=builder /src/target/release/dbmcp /app/dbmcp
+COPY --from=builder /app/target/release/dbmcp /usr/local/bin/dbmcp
 
 EXPOSE 8080
-ENTRYPOINT ["/app/dbmcp"]
+ENTRYPOINT ["/usr/local/bin/dbmcp"]
 CMD ["--transport", "http", "--http-addr", ":8080"]
