@@ -148,7 +148,7 @@ pub struct SQLiteConfig {
 
 #[derive(Debug, Parser)]
 pub struct Cli {
-    #[arg(long)]
+    #[arg(short = 'c', long, env = "DBMCP_CONFIG")]
     pub config: Option<PathBuf>,
     #[arg(long)]
     pub transport: Option<TransportMode>,

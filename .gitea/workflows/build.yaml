@@ -13,12 +13,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Build and publish on main
-        uses: https://gitea.cloud1ful.com/actions/docker-build-publish@main
+      - name: Login to registry
+        uses: docker/login-action@v3
         with:
           registry: gitea.cloud1ful.com
           username: ${{ github.actor }}
           password: ${{ secrets.TOKEN_GTCR }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
           context: .
           file: ./Dockerfile
           push: true

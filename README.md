@@ -13,6 +13,7 @@ Or with env:
 ```bash
 export DBMCP_TRANSPORT=http
 export DBMCP_HTTP_ADDR=:8080
+export DBMCP_CONFIG=./dbmcp.example.json
 export DBMCP_POSTGRES_DSN='postgres://reader:reader@localhost:5432/app?sslmode=disable'
 cargo run
 ```
