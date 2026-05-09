@@ -64,10 +64,12 @@ async fn run_both(state: Arc<mcp::AppState>) -> Result<()> {
 }
 
 fn http_config(state: Arc<mcp::AppState>) -> Result<cloudiful_server::ValidatedServerConfig<Arc<mcp::AppState>>> {
+    let http_addr = state.cfg.server.http_addr.clone();
     Ok(BaseServerConfig::new()
-        .with_listen_addr(state.cfg.server.http_addr.clone())
+        .with_listen_addr(http_addr.clone())
         .with_app_data(state)
-        .build()?)
+        .build()
+        .with_context(|| format!("invalid http listen address addr={http_addr}"))?)
 }
 
 fn build_router(state: Arc<mcp::AppState>) -> Router<Arc<mcp::AppState>> {

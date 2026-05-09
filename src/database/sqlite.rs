@@ -7,6 +7,7 @@ use super::*;
 #[derive(Clone)]
 pub struct SQLiteConnection {
     name: String,
+    dsn: String,
     limits: Limits,
     pool: AnyPool,
     default_schema: Arc<RwLock<String>>,
@@ -17,6 +18,7 @@ impl SQLiteConnection {
         let pool = AnyPool::connect_lazy(&config.dsn)?;
         Ok(Self {
             name,
+            dsn: config.dsn,
             limits,
             pool,
             default_schema: Arc::new(RwLock::new("main".to_string())),
@@ -53,7 +55,8 @@ impl DatabaseConnection for SQLiteConnection {
     async fn ping(&self) -> Result<()> {
         tokio::time::timeout(self.limits.query_timeout, self.pool.acquire())
             .await
-            .context("ping timeout")??;
+            .with_context(|| format!("sqlite ping timeout name={} dsn={}", self.name, self.dsn))?
+            .with_context(|| format!("sqlite ping failed name={} dsn={}", self.name, self.dsn))?;
         Ok(())
     }
 

@@ -82,7 +82,20 @@ impl DatabaseConnection for PostgresConnection {
     async fn ping(&self) -> Result<()> {
         tokio::time::timeout(self.limits.query_timeout, self.pool.acquire())
             .await
-            .context("ping timeout")??;
+            .with_context(|| {
+                format!(
+                    "postgres ping timeout name={} target={}",
+                    self.name,
+                    redact_postgres_dsn(&self.config.dsn)
+                )
+            })?
+            .with_context(|| {
+                format!(
+                    "postgres ping failed name={} target={}",
+                    self.name,
+                    redact_postgres_dsn(&self.config.dsn)
+                )
+            })?;
         self.refresh_schema().await?;
         Ok(())
     }
@@ -459,4 +472,23 @@ impl DatabaseConnection for PostgresConnection {
 
 fn quote_ident(value: &str) -> String {
     format!("\"{}\"", value.replace('"', "\"\""))
+}
+
+fn redact_postgres_dsn(raw: &str) -> String {
+    if let Ok(mut url) = url::Url::parse(raw) {
+        if url.password().is_some() {
+            let _ = url.set_password(Some("REDACTED"));
+        }
+        return url.to_string();
+    }
+    raw.split_whitespace()
+        .map(|part| {
+            if part.to_lowercase().starts_with("password=") {
+                "password=REDACTED".to_string()
+            } else {
+                part.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
