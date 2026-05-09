@@ -1,172 +1,30 @@
 # db-mcp
 
-Minimal MCP server for databases, implemented in Go. Oracle, PostgreSQL, and SQLite are supported today, and the service layer stays generic so more drivers can be added without changing the MCP tool surface.
+Rust MCP database server built on `cloudiful-server` + `axum`.
 
-## Features
-
-- MCP tools: `list_connections`, `list_schemas`, `list_tables`, `search_columns`, `list_constraints`, `list_indexes`, `get_table_comments`, `describe_table`, `get_table_ddl`, `execute_query`, `explain_query`
-- MCP prompts: `explore_database`, `inspect_table`
-- MCP resources: `db://connections` and `db://table/{connection}/{schema}/{table}`
-- Server-level MCP instructions to steer clients toward safe schema discovery before ad hoc SQL
-- Oracle support via a pure Go driver, so it can connect directly from a Go binary without Oracle Instant Client
-- PostgreSQL support via `pgx` stdlib
-- SQLite support via the pure Go `modernc.org/sqlite` driver
-- Supports `stdio`, `http`, and `both` transport modes
-- Degraded startup: the server stays up even when some or all configured databases are down
-- Per-connection health tracking with automatic recovery probes on later tool calls
-- Explicit read-only transaction handling for query execution and metadata reads
-- Row, cell, column, and total output truncation to avoid blowing up MCP context
-
-## Config
-
-Use a JSON config file:
+## Run
 
 ```bash
-go run ./cmd/dbmcp -config ./dbmcp.example.json
+cargo run -- -config ./dbmcp.example.json
 ```
 
-Or use environment variables:
+Or with env:
 
 ```bash
-export DBMCP_TRANSPORT=stdio
-export DBMCP_DEBUG=true
-export DBMCP_ORACLE_JDBC_URL='jdbc:oracle:thin:@unraid.cloud1ful.com:1521:XE'
-export DBMCP_ORACLE_USERNAME=readuser
-export DBMCP_ORACLE_PASSWORD=readuser
+export DBMCP_TRANSPORT=http
+export DBMCP_HTTP_ADDR=:8080
 export DBMCP_POSTGRES_DSN='postgres://reader:reader@localhost:5432/app?sslmode=disable'
-export DBMCP_POSTGRES_SCHEMA='research'
-export DBMCP_SQLITE_DSN='file:./app.db?mode=ro'
-go run ./cmd/dbmcp
+cargo run
 ```
 
-Supported environment variables for connections:
+## Endpoints
 
-- `DBMCP_DEBUG` enables extra startup diagnostics
-- `DBMCP_ORACLE_JDBC_URL`, `DBMCP_ORACLE_USERNAME`, `DBMCP_ORACLE_PASSWORD`, optional `DBMCP_ORACLE_NAME`
-- `DBMCP_POSTGRES_DSN`, optional `DBMCP_POSTGRES_NAME`, optional `DBMCP_POSTGRES_SCHEMA`
-- `DBMCP_SQLITE_DSN`, optional `DBMCP_SQLITE_NAME`
-- `DATABASE_URL` is also accepted as the PostgreSQL DSN fallback
-- `SQLITE_URL` is also accepted as the SQLite DSN fallback
-- `DBMCP_HTTP_AUTH_MODE` sets HTTP auth mode: `none` or `bearer`
-- `DBMCP_HTTP_AUTH_TOKEN` sets the static bearer token when auth mode is `bearer`
-
-Default context-protection limits are intentionally conservative:
-
-- `defaultMaxRows`: `5`
-- `hardMaxRows`: `20`
-- `maxTotalChars`: `1000`
-- `explainMaxLines`: `12`
-- `explainMaxTotalChars`: `4000`
-
-`explain_query` now uses its own truncation budget so execution plans can be a bit longer without also loosening normal `execute_query` result limits.
-
-When `-config` is used, connection settings from the environment are now merged with the file instead of being ignored. If an environment connection has the same connection name, it replaces the file entry.
-
-For HTTP mode:
-
-```bash
-go run ./cmd/dbmcp -config ./dbmcp.example.json -transport http -http-addr :8080
-```
-
-The streamable HTTP endpoint defaults to `/mcp`.
-
-To enable HTTP bearer auth:
-
-```bash
-export DBMCP_HTTP_AUTH_MODE=bearer
-export DBMCP_HTTP_AUTH_TOKEN='replace-me'
-go run ./cmd/dbmcp -transport http
-```
-
-HTTP auth defaults to `none`. When bearer auth is enabled, only the MCP endpoint is protected. `/healthz` and `/readyz` stay open for probes.
-
-## Health and degraded startup
-
-This server now starts as long as the config is valid, even if one or more configured databases are unavailable at boot. Each connection is probed independently and exposed with cached health metadata:
-
-- `status`: `up`, `degraded`, or `down` at the aggregate level; per-connection entries report `up` or `down`
-- `available`: boolean readiness for that specific connection
-- `lastCheckedAt`, `lastSuccessfulAt`, `lastError`
-
-Use these surfaces to inspect health:
-
-- MCP tool: `list_connections` with default `refresh=true`
-- MCP resource: `db://connections`
-- HTTP liveness: `/healthz`
-- HTTP readiness: `/readyz`
-
-`/healthz` is process liveness only and always returns `200 ok` while the server is running. `/readyz` returns JSON health details and:
-
-- `200` when at least one configured connection is currently available
-- `503` when every configured connection is currently unavailable
-
-## Docker
-
-Build the image with your Nexus mirror:
-
-```bash
-docker build -t db-mcp:latest .
-```
-
-Run it in HTTP mode:
-
-```bash
-docker run --rm -p 8080:8080 \
-  -e DBMCP_ORACLE_JDBC_URL='jdbc:oracle:thin:@unraid.cloud1ful.com:1521:XE' \
-  -e DBMCP_ORACLE_USERNAME=readuser \
-  -e DBMCP_ORACLE_PASSWORD=readuser \
-  -e DBMCP_POSTGRES_DSN='postgres://reader:reader@postgres:5432/app?sslmode=disable' \
-  -e DBMCP_SQLITE_DSN='file:/data/app.db?mode=ro' \
-  db-mcp:latest
-```
-
-The container defaults to:
-
-- `-transport http`
-- `-http-addr :8080`
-- MCP endpoint: `http://<host>:8080/mcp`
-- Health endpoint: `http://<host>:8080/healthz`
-- Readiness endpoint: `http://<host>:8080/readyz`
-
-On startup the server now logs:
-
-- each configured database connection before connect, including a redacted PostgreSQL target
-- enabled transport
-- HTTP host, port, MCP path, and health endpoints when HTTP is enabled
-- each configured database connection and whether its initial probe is `up` or `down`
-
-You can also enable debug logging with:
-
-```bash
-go run ./cmd/dbmcp -debug=true
-```
-
-For SQLite, prefer a read-only DSN such as:
-
-```text
-file:./app.db?mode=ro
-```
-
-Override startup flags if needed:
-
-```bash
-docker run --rm -p 8081:8081 \
-  -e DBMCP_ORACLE_JDBC_URL='jdbc:oracle:thin:@unraid.cloud1ful.com:1521:XE' \
-  -e DBMCP_ORACLE_USERNAME=readuser \
-  -e DBMCP_ORACLE_PASSWORD=readuser \
-  db-mcp:latest -transport http -http-addr :8081
-```
+- `/mcp`
+- `/healthz`
+- `/readyz`
 
 ## Notes
 
-- If availability is uncertain, start with `list_connections` or `db://connections`.
-- Prefer the discovery flow `list_connections` / `db://connections` -> `list_schemas` -> `list_tables` / `search_columns` -> `describe_table` / `list_constraints` / `list_indexes` / `get_table_comments` / `get_table_ddl` before `execute_query`.
-- If the MCP client supports resources, `db://table/{connection}/{schema}/{table}` returns a compact JSON bundle for one table with columns, constraints, indexes, and comments.
-- `list_connections` refreshes health by default and returns health fields for each configured connection.
-- Resources are a native MCP concept, not a custom extension in this repo. They are read-oriented endpoints that let the client fetch structured context such as `db://connections` or one table overview without inventing an extra tool call.
-- This server's MCP instructions, prompts, tools, and resources are registered in `internal/mcpserver/server.go`. Clients vary in how visibly they surface prompts/resources/instructions, but the server exports them all.
-- `execute_query` only accepts `SELECT` and `WITH` statements.
-- Any attempt to send multiple statements or `FOR UPDATE` is rejected.
-- The configured database user should still be read-only; SQL filtering is a second layer, not the only one.
-- `explain_query` stays read-only. PostgreSQL and SQLite are supported. Oracle returns an explicit error instead of using writable plan tables.
-- Integration tests are available behind the `integration` build tag and use environment variables instead of embedding credentials.
+- `execute_query` only allows `SELECT` and `WITH`
+- PostgreSQL and SQLite use `sqlx`
+- Oracle is kept behind the same interface, but not enabled in this build
