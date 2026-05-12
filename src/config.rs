@@ -233,8 +233,7 @@ impl Config {
         if self.limits.query_timeout.trim().is_empty() {
             self.limits.query_timeout = "15s".to_string();
         }
-        humantime::parse_duration(&self.limits.query_timeout)
-            .context("invalid query_timeout")?;
+        humantime::parse_duration(&self.limits.query_timeout).context("invalid query_timeout")?;
 
         if self.connections.is_empty() {
             bail!("at least one connection must be configured");

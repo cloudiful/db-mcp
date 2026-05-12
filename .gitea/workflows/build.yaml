@@ -14,14 +14,14 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Login to registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: gitea.cloud1ful.com
           username: ${{ github.actor }}
           password: ${{ secrets.TOKEN_GTCR }}
 
       - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
         with:
           driver: docker-container
 

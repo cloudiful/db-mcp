@@ -3,17 +3,20 @@ use async_trait::async_trait;
 use base64::Engine;
 use futures_util::TryStreamExt;
 use rmcp::model::{
-    CallToolResult, Content, GetPromptResult, InitializeResult, ListPromptsResult,
-    ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, Prompt,
-    PromptArgument, PromptMessage, ReadResourceResult, RawContent, RawResource,
-    RawResourceTemplate, Resource, ResourceContents, ResourceTemplate, ServerCapabilities,
-    ServerInfo, Tool, AnnotateAble,
+    AnnotateAble, CallToolResult, Content, GetPromptResult, InitializeResult, ListPromptsResult,
+    ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, Prompt, PromptArgument,
+    PromptMessage, RawContent, RawResource, RawResourceTemplate, ReadResourceResult, Resource,
+    ResourceContents, ResourceTemplate, ServerCapabilities, ServerInfo, Tool,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use sqlx::{AnyPool, Row, Column, TypeInfo, ValueRef, any::AnyRow};
-use std::{collections::BTreeMap, sync::{Arc, Mutex, Once}, time::Instant};
+use sqlx::{AnyPool, Column, Row, TypeInfo, ValueRef, any::AnyRow};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex, Once},
+    time::Instant,
+};
 use tracing::{info, warn};
 
 use crate::{config, readonly_sql};
@@ -244,8 +247,12 @@ pub trait DatabaseConnection: Send + Sync {
     ) -> Result<TableCommentInfo>;
     async fn describe_table(&self, schema: Option<&str>, table: &str) -> Result<Vec<ColumnInfo>>;
     async fn get_table_ddl(&self, schema: Option<&str>, table: &str) -> Result<TableDDLInfo>;
-    async fn execute_query(&self, sql: &str, max_rows: usize, limits: &Limits)
-        -> Result<QueryResult>;
+    async fn execute_query(
+        &self,
+        sql: &str,
+        max_rows: usize,
+        limits: &Limits,
+    ) -> Result<QueryResult>;
     async fn explain_query(&self, sql: &str, limits: &Limits) -> Result<ExplainResultData>;
 }
 
@@ -612,36 +619,40 @@ async fn open_connection(
     limits: &Limits,
 ) -> Result<Box<dyn DatabaseConnection>> {
     match cfg.driver.as_str() {
-        "postgres" => Ok(Box::new(postgres::PostgresConnection::new(
-            cfg.name.clone(),
-            cfg.postgres
-                .as_ref()
-                .with_context(|| format!("postgres config missing name={}", cfg.name))?
-                .clone(),
-            limits.clone(),
-        )
-        .with_context(|| {
-            format!(
-                "postgres connection init failed name={} target={}",
-                cfg.name,
-                connection_target_summary(cfg)
+        "postgres" => Ok(Box::new(
+            postgres::PostgresConnection::new(
+                cfg.name.clone(),
+                cfg.postgres
+                    .as_ref()
+                    .with_context(|| format!("postgres config missing name={}", cfg.name))?
+                    .clone(),
+                limits.clone(),
             )
-        })?)),
-        "sqlite" => Ok(Box::new(sqlite::SQLiteConnection::new(
-            cfg.name.clone(),
-            cfg.sqlite
-                .as_ref()
-                .with_context(|| format!("sqlite config missing name={}", cfg.name))?
-                .clone(),
-            limits.clone(),
-        )
-        .with_context(|| {
-            format!(
-                "sqlite connection init failed name={} target={}",
-                cfg.name,
-                connection_target_summary(cfg)
+            .with_context(|| {
+                format!(
+                    "postgres connection init failed name={} target={}",
+                    cfg.name,
+                    connection_target_summary(cfg)
+                )
+            })?,
+        )),
+        "sqlite" => Ok(Box::new(
+            sqlite::SQLiteConnection::new(
+                cfg.name.clone(),
+                cfg.sqlite
+                    .as_ref()
+                    .with_context(|| format!("sqlite config missing name={}", cfg.name))?
+                    .clone(),
+                limits.clone(),
             )
-        })?)),
+            .with_context(|| {
+                format!(
+                    "sqlite connection init failed name={} target={}",
+                    cfg.name,
+                    connection_target_summary(cfg)
+                )
+            })?,
+        )),
         "oracle" => Ok(Box::new(oracle::OracleConnection::new(
             cfg.name.clone(),
             cfg.oracle
@@ -689,7 +700,13 @@ pub fn call_tool_json<T: Serialize>(text: impl Into<String>, value: &T) -> Resul
     Ok(result)
 }
 
-pub fn to_resource(uri: impl Into<String>, name: impl Into<String>, title: impl Into<String>, description: impl Into<String>, mime_type: impl Into<String>) -> Resource {
+pub fn to_resource(
+    uri: impl Into<String>,
+    name: impl Into<String>,
+    title: impl Into<String>,
+    description: impl Into<String>,
+    mime_type: impl Into<String>,
+) -> Resource {
     RawResource::new(uri, name)
         .with_title(title)
         .with_description(description)
@@ -719,7 +736,10 @@ pub fn prompt_with_args(name: &str, description: &str, args: Vec<PromptArgument>
     Prompt::new(name, Some(description), Some(args))
 }
 
-pub fn get_prompt_result(description: impl Into<String>, messages: Vec<PromptMessage>) -> GetPromptResult {
+pub fn get_prompt_result(
+    description: impl Into<String>,
+    messages: Vec<PromptMessage>,
+) -> GetPromptResult {
     GetPromptResult::new(messages).with_description(description)
 }
 
@@ -748,7 +768,9 @@ pub fn list_resources_result(resources: Vec<Resource>) -> ListResourcesResult {
     }
 }
 
-pub fn list_resource_templates_result(resource_templates: Vec<ResourceTemplate>) -> ListResourceTemplatesResult {
+pub fn list_resource_templates_result(
+    resource_templates: Vec<ResourceTemplate>,
+) -> ListResourceTemplatesResult {
     ListResourceTemplatesResult {
         resource_templates,
         ..Default::default()

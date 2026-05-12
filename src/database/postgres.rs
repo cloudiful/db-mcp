@@ -156,7 +156,9 @@ impl DatabaseConnection for PostgresConnection {
         Ok(rows
             .into_iter()
             .map(|row| TableInfo {
-                schema: row.try_get("table_schema").unwrap_or_else(|_| schema.clone()),
+                schema: row
+                    .try_get("table_schema")
+                    .unwrap_or_else(|_| schema.clone()),
                 name: row.try_get("table_name").unwrap_or_default(),
                 table_type: row.try_get("table_type").unwrap_or_default(),
             })
@@ -194,11 +196,15 @@ impl DatabaseConnection for PostgresConnection {
         Ok(rows
             .into_iter()
             .map(|row| ColumnMatchInfo {
-                schema: row.try_get("table_schema").unwrap_or_else(|_| schema.clone()),
+                schema: row
+                    .try_get("table_schema")
+                    .unwrap_or_else(|_| schema.clone()),
                 table: row.try_get("table_name").unwrap_or_default(),
                 column: row.try_get("column_name").unwrap_or_default(),
                 data_type: row.try_get("data_type").unwrap_or_default(),
-                position: row.try_get::<i64, _>("ordinal_position").unwrap_or_default(),
+                position: row
+                    .try_get::<i64, _>("ordinal_position")
+                    .unwrap_or_default(),
             })
             .collect())
     }
@@ -420,7 +426,11 @@ impl DatabaseConnection for PostgresConnection {
             .await?
         } else {
             let columns = self.describe_table(Some(&schema), table).await?;
-            let mut ddl = format!("CREATE TABLE {}.{} (\n", quote_ident(&schema), quote_ident(table));
+            let mut ddl = format!(
+                "CREATE TABLE {}.{} (\n",
+                quote_ident(&schema),
+                quote_ident(table)
+            );
             for (idx, col) in columns.iter().enumerate() {
                 let nullable = if col.nullable { "" } else { " NOT NULL" };
                 ddl.push_str(&format!(
@@ -428,7 +438,11 @@ impl DatabaseConnection for PostgresConnection {
                     quote_ident(&col.name),
                     col.data_type,
                     nullable,
-                    if idx + 1 == columns.len() { "\n" } else { ",\n" }
+                    if idx + 1 == columns.len() {
+                        "\n"
+                    } else {
+                        ",\n"
+                    }
                 ));
             }
             ddl.push(')');

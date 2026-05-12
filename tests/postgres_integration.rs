@@ -34,7 +34,10 @@ async fn postgres_manager_health_is_up() {
 
     assert_eq!(health.default_connection, "postgres");
     assert_eq!(health.connections.len(), 1);
-    assert!(health.connections[0].available, "postgres should be reachable");
+    assert!(
+        health.connections[0].available,
+        "postgres should be reachable"
+    );
     assert_eq!(health.connections[0].driver, "postgres");
 }
 
@@ -44,7 +47,10 @@ async fn postgres_can_list_schemas_and_run_select() {
     let manager = Manager::new(&cfg).await.expect("manager init");
     let conn = manager.connection(Some("postgres")).expect("connection");
 
-    let schemas = conn.list_schemas(Some("pub"), 10).await.expect("list_schemas");
+    let schemas = conn
+        .list_schemas(Some("pub"), 10)
+        .await
+        .expect("list_schemas");
     assert!(
         schemas.iter().any(|schema| schema.name == "public"),
         "public schema should be visible"

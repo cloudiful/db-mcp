@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
-use axum::{Json, Router, routing::get, middleware};
+use axum::{Json, Router, middleware, routing::get};
+use cloudiful_server::mcp as cloudiful_mcp;
 use cloudiful_server::{ServerConfig as BaseServerConfig, axum::Server as HttpServer};
 use std::env;
 use std::sync::Arc;
@@ -40,14 +41,14 @@ async fn run_stdio(state: Arc<mcp::AppState>) -> Result<()> {
 async fn run_http(state: Arc<mcp::AppState>) -> Result<()> {
     let cfg = http_config(state.clone())?;
     let app = build_router(state);
-    HttpServer::new_with_state(cfg, app).start().await?;
+    HttpServer::new(cfg, app).start().await?;
     Ok(())
 }
 
 async fn run_both(state: Arc<mcp::AppState>) -> Result<()> {
     let cfg = http_config(state.clone())?;
     let app = build_router(state.clone());
-    let http = HttpServer::new_with_state(cfg, app);
+    let http = HttpServer::new(cfg, app);
     let http_task = tokio::spawn(async move { http.start().await });
     let stdio_task = tokio::spawn(async move { run_stdio(state).await });
 
@@ -65,28 +66,40 @@ async fn run_both(state: Arc<mcp::AppState>) -> Result<()> {
     Ok(())
 }
 
-fn http_config(state: Arc<mcp::AppState>) -> Result<cloudiful_server::ValidatedServerConfig<Arc<mcp::AppState>>> {
+fn http_config(state: Arc<mcp::AppState>) -> Result<cloudiful_server::ValidatedServerConfig> {
     let http_addr = state.cfg.server.http_addr.clone();
     Ok(BaseServerConfig::new()
         .with_listen_addr(http_addr.clone())
-        .with_app_data(state)
         .build()
         .with_context(|| format!("invalid http listen address addr={http_addr}"))?)
 }
 
-fn build_router(state: Arc<mcp::AppState>) -> Router<Arc<mcp::AppState>> {
-    let mcp_service = mcp::mcp_service(state.clone());
-    let mcp_path = state.cfg.server.http_path.clone();
-    let mcp_router = Router::new().nest_service(&mcp_path, mcp_service);
+fn build_router(state: Arc<mcp::AppState>) -> Router {
+    let mcp_config =
+        cloudiful_mcp::ServerConfig::new().with_service_path(state.cfg.server.http_path.clone());
+    let mcp_state = state.clone();
+    let mcp_router = cloudiful_mcp::router(mcp_config, move || {
+        mcp::DbMcpService::new(mcp_state.clone())
+    })
+    .expect("validated MCP HTTP service path");
     let mcp_router = if state.cfg.server.http_auth.mode == crate::config::HttpAuthMode::Bearer {
-        mcp_router.route_layer(middleware::from_fn_with_state(state.clone(), mcp::bearer_auth))
+        mcp_router.route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            mcp::bearer_auth,
+        ))
     } else {
         mcp_router
     };
 
     Router::new()
         .route("/healthz", get(healthz))
-        .route("/readyz", get(readyz))
+        .route(
+            "/readyz",
+            get({
+                let state = state.clone();
+                move || readyz(state.clone())
+            }),
+        )
         .merge(mcp_router)
 }
 
@@ -95,8 +108,11 @@ async fn healthz() -> &'static str {
 }
 
 async fn readyz(
-    State(state): State<Arc<mcp::AppState>>,
-) -> Result<(axum::http::StatusCode, Json<database::HealthSnapshot>), (axum::http::StatusCode, String)> {
+    state: Arc<mcp::AppState>,
+) -> Result<
+    (axum::http::StatusCode, Json<database::HealthSnapshot>),
+    (axum::http::StatusCode, String),
+> {
     match state.manager.health(None, true).await {
         Ok(snapshot) => {
             let code = if snapshot.status == "down" {
@@ -106,7 +122,10 @@ async fn readyz(
             };
             Ok((code, Json(snapshot)))
         }
-        Err(err) => Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, err.to_string())),
+        Err(err) => Err((
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            err.to_string(),
+        )),
     }
 }
 
@@ -139,7 +158,10 @@ fn log_startup(cfg: &config::Config, manager: &database::Manager) {
             );
         }
     }
-    if matches!(cfg.server.transport, config::TransportMode::Http | config::TransportMode::Both) {
+    if matches!(
+        cfg.server.transport,
+        config::TransportMode::Http | config::TransportMode::Both
+    ) {
         let (host, port) = split_listen_addr(&cfg.server.http_addr);
         info!(
             "http MCP listening host={} port={} path={} healthz=/healthz readyz=/readyz",
@@ -154,7 +176,11 @@ fn split_listen_addr(addr: &str) -> (String, String) {
     }
     match addr.rsplit_once(':') {
         Some((host, port)) => (
-            if host.is_empty() { "0.0.0.0".to_string() } else { host.to_string() },
+            if host.is_empty() {
+                "0.0.0.0".to_string()
+            } else {
+                host.to_string()
+            },
             port.to_string(),
         ),
         None => (addr.to_string(), String::new()),
@@ -210,5 +236,3 @@ fn redact_postgres_dsn(raw: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
-
-use axum::extract::State;

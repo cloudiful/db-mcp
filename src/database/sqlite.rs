@@ -121,11 +121,17 @@ impl DatabaseConnection for SQLiteConnection {
         let tables = self.list_tables(Some(&schema), None, usize::MAX).await?;
         let mut out = vec![];
         for table in tables {
-            let pragma = format!("pragma {}.table_info({})", quote_ident(&schema), quote_string(&table.name));
+            let pragma = format!(
+                "pragma {}.table_info({})",
+                quote_ident(&schema),
+                quote_string(&table.name)
+            );
             let rows = sqlx::query(&pragma).fetch_all(&self.pool).await?;
             for row in rows {
                 let column: String = row.try_get("name").unwrap_or_default();
-                if !column.to_lowercase().contains(&filter) && !table.name.to_lowercase().contains(&filter) {
+                if !column.to_lowercase().contains(&filter)
+                    && !table.name.to_lowercase().contains(&filter)
+                {
                     continue;
                 }
                 out.push(ColumnMatchInfo {
@@ -151,7 +157,11 @@ impl DatabaseConnection for SQLiteConnection {
     ) -> Result<Vec<ConstraintInfo>> {
         let schema = schema.map(str::to_string).unwrap_or(self.schema().await);
         let table = table.context("table is required")?;
-        let pragma = format!("pragma {}.foreign_key_list({})", quote_ident(&schema), quote_string(table));
+        let pragma = format!(
+            "pragma {}.foreign_key_list({})",
+            quote_ident(&schema),
+            quote_string(table)
+        );
         let rows = sqlx::query(&pragma).fetch_all(&self.pool).await?;
         let mut out = vec![];
         for row in rows {
@@ -182,7 +192,11 @@ impl DatabaseConnection for SQLiteConnection {
     ) -> Result<Vec<IndexInfo>> {
         let schema = schema.map(str::to_string).unwrap_or(self.schema().await);
         let table = table.context("table is required")?;
-        let pragma = format!("pragma {}.index_list({})", quote_ident(&schema), quote_string(table));
+        let pragma = format!(
+            "pragma {}.index_list({})",
+            quote_ident(&schema),
+            quote_string(table)
+        );
         let rows = sqlx::query(&pragma).fetch_all(&self.pool).await?;
         let mut out = vec![];
         for row in rows {
@@ -232,7 +246,11 @@ impl DatabaseConnection for SQLiteConnection {
 
     async fn describe_table(&self, schema: Option<&str>, table: &str) -> Result<Vec<ColumnInfo>> {
         let schema = schema.map(str::to_string).unwrap_or(self.schema().await);
-        let pragma = format!("pragma {}.table_info({})", quote_ident(&schema), quote_string(table));
+        let pragma = format!(
+            "pragma {}.table_info({})",
+            quote_ident(&schema),
+            quote_string(table)
+        );
         let rows = sqlx::query(&pragma).fetch_all(&self.pool).await?;
         Ok(rows
             .into_iter()
@@ -250,7 +268,10 @@ impl DatabaseConnection for SQLiteConnection {
 
     async fn get_table_ddl(&self, schema: Option<&str>, table: &str) -> Result<TableDDLInfo> {
         let schema = schema.map(str::to_string).unwrap_or(self.schema().await);
-        let sql = format!("select sql from {}.sqlite_master where name = ?", quote_ident(&schema));
+        let sql = format!(
+            "select sql from {}.sqlite_master where name = ?",
+            quote_ident(&schema)
+        );
         let ddl: Option<String> = sqlx::query_scalar(&sql)
             .bind(table)
             .fetch_optional(&self.pool)
@@ -280,7 +301,9 @@ impl DatabaseConnection for SQLiteConnection {
             .await?;
         let mut lines = vec![];
         for row in rows.into_iter().take(limits.explain_max_lines) {
-            let detail: String = row.try_get("detail").unwrap_or_else(|_| row.try_get(3).unwrap_or_default());
+            let detail: String = row
+                .try_get("detail")
+                .unwrap_or_else(|_| row.try_get(3).unwrap_or_default());
             lines.push(detail);
         }
         Ok(ExplainResultData {
