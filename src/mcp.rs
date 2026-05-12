@@ -626,7 +626,9 @@ impl ServerHandler for DbMcpService {
 }
 
 pub fn mcp_service(state: Arc<AppState>) -> StreamableHttpService<DbMcpService, LocalSessionManager> {
-    let config = StreamableHttpServerConfig::default().with_json_response(false);
+    let config = StreamableHttpServerConfig::default()
+        .with_json_response(false)
+        .disable_allowed_hosts();
     StreamableHttpService::new(
         move || Ok::<_, std::io::Error>(DbMcpService::new(state.clone())),
         LocalSessionManager::default().into(),
