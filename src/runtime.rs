@@ -1,15 +1,17 @@
 use anyhow::{Context, Result};
 use axum::{Json, Router, routing::get, middleware};
 use cloudiful_server::{ServerConfig as BaseServerConfig, axum::Server as HttpServer};
+use std::env;
 use std::sync::Arc;
 use tracing::{info, warn};
 
 use crate::{config, database, mcp};
 
 pub fn init_tracing() {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .try_init();
+    let default_filter = if debug_requested() { "debug" } else { "info" };
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_filter));
+    let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
 }
 
 pub async fn run(cli: config::Cli) -> Result<()> {
@@ -178,6 +180,12 @@ fn connection_target_summary(conn: &config::ConnectionConfig) -> String {
             .unwrap_or_else(|| "sqlite:<missing>".to_string()),
         _ => "<unknown>".to_string(),
     }
+}
+
+fn debug_requested() -> bool {
+    env::var("DBMCP_DEBUG")
+        .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
 }
 
 fn redact_postgres_dsn(raw: &str) -> String {

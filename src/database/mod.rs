@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sqlx::{AnyPool, Row, Column, TypeInfo, ValueRef, any::AnyRow};
 use std::{collections::BTreeMap, sync::{Arc, Mutex, Once}, time::Instant};
+use tracing::{info, warn};
 
 use crate::{config, readonly_sql};
 
@@ -255,6 +256,124 @@ struct Slot {
 }
 
 #[derive(Clone)]
+struct FailedConnection {
+    name: String,
+    driver: String,
+    default_schema: String,
+    error: String,
+}
+
+impl FailedConnection {
+    fn new(name: String, driver: String, default_schema: String, error: String) -> Self {
+        Self {
+            name,
+            driver,
+            default_schema,
+            error,
+        }
+    }
+
+    fn unavailable_error(&self, op: &str) -> anyhow::Error {
+        anyhow::anyhow!(
+            "connection unavailable op={} name={} driver={} error={}",
+            op,
+            self.name,
+            self.driver,
+            self.error
+        )
+    }
+}
+
+#[async_trait]
+impl DatabaseConnection for FailedConnection {
+    fn info(&self) -> ConnectionInfo {
+        ConnectionInfo {
+            name: self.name.clone(),
+            driver: self.driver.clone(),
+            default_schema: self.default_schema.clone(),
+            status: "down".to_string(),
+            available: false,
+            last_checked_at: None,
+            last_successful_at: None,
+            last_error: Some(self.error.clone()),
+        }
+    }
+
+    async fn ping(&self) -> Result<()> {
+        Err(self.unavailable_error("ping"))
+    }
+
+    async fn list_schemas(&self, _filter: Option<&str>, _limit: usize) -> Result<Vec<SchemaInfo>> {
+        Err(self.unavailable_error("list_schemas"))
+    }
+
+    async fn list_tables(
+        &self,
+        _schema: Option<&str>,
+        _filter: Option<&str>,
+        _limit: usize,
+    ) -> Result<Vec<TableInfo>> {
+        Err(self.unavailable_error("list_tables"))
+    }
+
+    async fn search_columns(
+        &self,
+        _schema: Option<&str>,
+        _filter: Option<&str>,
+        _limit: usize,
+    ) -> Result<Vec<ColumnMatchInfo>> {
+        Err(self.unavailable_error("search_columns"))
+    }
+
+    async fn list_constraints(
+        &self,
+        _schema: Option<&str>,
+        _table: Option<&str>,
+        _limit: usize,
+    ) -> Result<Vec<ConstraintInfo>> {
+        Err(self.unavailable_error("list_constraints"))
+    }
+
+    async fn list_indexes(
+        &self,
+        _schema: Option<&str>,
+        _table: Option<&str>,
+        _limit: usize,
+    ) -> Result<Vec<IndexInfo>> {
+        Err(self.unavailable_error("list_indexes"))
+    }
+
+    async fn get_table_comments(
+        &self,
+        _schema: Option<&str>,
+        _table: &str,
+    ) -> Result<TableCommentInfo> {
+        Err(self.unavailable_error("get_table_comments"))
+    }
+
+    async fn describe_table(&self, _schema: Option<&str>, _table: &str) -> Result<Vec<ColumnInfo>> {
+        Err(self.unavailable_error("describe_table"))
+    }
+
+    async fn get_table_ddl(&self, _schema: Option<&str>, _table: &str) -> Result<TableDDLInfo> {
+        Err(self.unavailable_error("get_table_ddl"))
+    }
+
+    async fn execute_query(
+        &self,
+        _sql: &str,
+        _max_rows: usize,
+        _limits: &Limits,
+    ) -> Result<QueryResult> {
+        Err(self.unavailable_error("execute_query"))
+    }
+
+    async fn explain_query(&self, _sql: &str, _limits: &Limits) -> Result<ExplainResultData> {
+        Err(self.unavailable_error("explain_query"))
+    }
+}
+
+#[derive(Clone)]
 pub struct Manager {
     slots: Arc<BTreeMap<String, Slot>>,
     default_name: String,
@@ -269,7 +388,29 @@ impl Manager {
         let limits = Limits::from_config(cfg)?;
         let mut slots = BTreeMap::new();
         for conn_cfg in &cfg.connections {
-            let conn = open_connection(conn_cfg, &limits).await?;
+            let target = connection_target_summary(conn_cfg);
+            let conn = match open_connection(conn_cfg, &limits).await {
+                Ok(conn) => {
+                    info!(
+                        "database connection initialized name={} driver={} target={}",
+                        conn_cfg.name, conn_cfg.driver, target
+                    );
+                    conn
+                }
+                Err(err) => {
+                    let error = format!("{:#}", err);
+                    warn!(
+                        "database connection unavailable name={} driver={} target={} error={}",
+                        conn_cfg.name, conn_cfg.driver, target, error
+                    );
+                    Box::new(FailedConnection::new(
+                        conn_cfg.name.clone(),
+                        conn_cfg.driver.clone(),
+                        default_schema_for_failed_connection(conn_cfg),
+                        error,
+                    ))
+                }
+            };
             let info = conn.info();
             let health = ConnectionHealth {
                 name: info.name.clone(),
@@ -402,6 +543,70 @@ fn overall_status(connections: &[ConnectionHealth]) -> String {
     }
 }
 
+fn default_schema_for_failed_connection(cfg: &config::ConnectionConfig) -> String {
+    match cfg.driver.as_str() {
+        "postgres" => cfg
+            .postgres
+            .as_ref()
+            .and_then(|c| {
+                let schema = c.schema.trim();
+                (!schema.is_empty()).then(|| schema.to_string())
+            })
+            .unwrap_or_else(|| "public".to_string()),
+        "sqlite" => "main".to_string(),
+        "oracle" => cfg
+            .oracle
+            .as_ref()
+            .map(|c| c.username.to_uppercase())
+            .unwrap_or_default(),
+        _ => String::new(),
+    }
+}
+
+fn connection_target_summary(conn: &config::ConnectionConfig) -> String {
+    match conn.driver.as_str() {
+        "oracle" => conn
+            .oracle
+            .as_ref()
+            .map(|c| c.jdbc_url.clone())
+            .unwrap_or_else(|| "oracle:<missing>".to_string()),
+        "postgres" => conn
+            .postgres
+            .as_ref()
+            .map(|c| redact_postgres_dsn(&c.dsn))
+            .unwrap_or_else(|| "postgres:<missing>".to_string()),
+        "sqlite" => conn
+            .sqlite
+            .as_ref()
+            .map(|c| c.dsn.clone())
+            .unwrap_or_else(|| "sqlite:<missing>".to_string()),
+        _ => "<unknown>".to_string(),
+    }
+}
+
+fn redact_postgres_dsn(raw: &str) -> String {
+    if let Ok(mut url) = url::Url::parse(raw) {
+        if url.password().is_some() {
+            let username = url.username().to_string();
+            let _ = url.set_password(Some("REDACTED"));
+            if username.is_empty() {
+                let _ = url.set_username("");
+            }
+        }
+        return url.to_string();
+    }
+    raw.split_whitespace()
+        .map(|part| {
+            if part.to_lowercase().starts_with("password=") {
+                "password=REDACTED".to_string()
+            } else {
+                part.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 async fn open_connection(
     cfg: &config::ConnectionConfig,
     limits: &Limits,
@@ -411,18 +616,38 @@ async fn open_connection(
             cfg.name.clone(),
             cfg.postgres
                 .as_ref()
-                .context("postgres config missing")?
+                .with_context(|| format!("postgres config missing name={}", cfg.name))?
                 .clone(),
             limits.clone(),
-        )?)),
+        )
+        .with_context(|| {
+            format!(
+                "postgres connection init failed name={} target={}",
+                cfg.name,
+                connection_target_summary(cfg)
+            )
+        })?)),
         "sqlite" => Ok(Box::new(sqlite::SQLiteConnection::new(
             cfg.name.clone(),
-            cfg.sqlite.as_ref().context("sqlite config missing")?.clone(),
+            cfg.sqlite
+                .as_ref()
+                .with_context(|| format!("sqlite config missing name={}", cfg.name))?
+                .clone(),
             limits.clone(),
-        )?)),
+        )
+        .with_context(|| {
+            format!(
+                "sqlite connection init failed name={} target={}",
+                cfg.name,
+                connection_target_summary(cfg)
+            )
+        })?)),
         "oracle" => Ok(Box::new(oracle::OracleConnection::new(
             cfg.name.clone(),
-            cfg.oracle.as_ref().context("oracle config missing")?.clone(),
+            cfg.oracle
+                .as_ref()
+                .with_context(|| format!("oracle config missing name={}", cfg.name))?
+                .clone(),
             limits.clone(),
         ))),
         other => bail!("unsupported driver {other}"),
