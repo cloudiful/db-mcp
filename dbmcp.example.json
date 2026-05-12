@@ -3,7 +3,7 @@
     "name": "db-mcp",
     "version": "0.1.0",
     "transport": "stdio",
-    "httpAddr": ":8080",
+    "httpAddr": "0.0.0.0:8080",
     "httpPath": "/mcp"
   },
   "limits": {

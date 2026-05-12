@@ -33,4 +33,4 @@ COPY --from=builder /app/target/release/dbmcp /usr/local/bin/dbmcp
 
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/dbmcp"]
-CMD ["--transport", "http", "--http-addr", ":8080"]
+CMD ["--transport", "http", "--http-addr", "0.0.0.0:8080"]

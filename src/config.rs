@@ -50,7 +50,7 @@ impl Default for ServerConfig {
             version: "0.1.0".to_string(),
             debug: false,
             transport: TransportMode::Stdio,
-            http_addr: ":8080".to_string(),
+            http_addr: "0.0.0.0:8080".to_string(),
             http_path: "/mcp".to_string(),
             http_auth: HttpAuthConfig::default(),
         }
@@ -196,8 +196,11 @@ impl Config {
         if self.server.version.trim().is_empty() {
             self.server.version = "0.1.0".to_string();
         }
-        if self.server.http_addr.trim().is_empty() {
-            self.server.http_addr = ":8080".to_string();
+        let http_addr = self.server.http_addr.trim();
+        if http_addr.is_empty() {
+            self.server.http_addr = "0.0.0.0:8080".to_string();
+        } else if let Some(port) = http_addr.strip_prefix(':') {
+            self.server.http_addr = format!("0.0.0.0:{port}");
         }
         if self.server.http_path.trim().is_empty() || !self.server.http_path.starts_with('/') {
             self.server.http_path = "/mcp".to_string();
