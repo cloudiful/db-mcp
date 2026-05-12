@@ -20,6 +20,7 @@ clap = { version = "4.6.1", features = ["derive", "env"] }
 cloudiful-server = { package = "cloudiful-server", version = "0.2.3", default-features = false, features = ["axum", "mcp"] }
 futures-util = "0.3.32"
 humantime = "2.3.0"
+oracle-rs = "0.1.6"
 rmcp = { version = "1.6.0", features = ["server", "schemars", "transport-io", "transport-streamable-http-server", "transport-streamable-http-server-session"] }
 schemars = "1.2.1"
 serde = { version = "1.0.228", features = ["derive"] }

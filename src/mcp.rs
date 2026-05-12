@@ -33,6 +33,10 @@ impl DbMcpService {
                 "list_connections",
                 "List configured database connections.",
             ),
+            tool_schema::<DiagnoseConnectionInput>(
+                "diagnose_connection",
+                "Run staged connection diagnostics for one or all configured databases.",
+            ),
             tool_schema::<ListInput>("list_schemas", "List visible schemas for a connection."),
             tool_schema::<ListInput>("list_tables", "List tables and views in a schema."),
             tool_schema::<SearchColumnsInput>(
@@ -129,6 +133,18 @@ impl DbMcpService {
                 output.default_connection
             ),
             &output,
+        )
+    }
+
+    async fn diagnose_connection(&self, input: DiagnoseConnectionInput) -> Result<CallToolResult> {
+        let diagnostics = self
+            .state
+            .manager
+            .diagnose(input.connection.as_deref(), input.deep.unwrap_or(false))
+            .await?;
+        database::call_tool_json(
+            format!("Returned diagnostic data for {} connection(s).", diagnostics.len()),
+            &DiagnoseConnectionOutput { diagnostics },
         )
     }
 
@@ -314,6 +330,13 @@ pub struct ListConnectionsInput {
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+pub struct DiagnoseConnectionInput {
+    pub connection: Option<String>,
+    pub deep: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct ListInput {
     pub connection: Option<String>,
     pub schema: Option<String>,
@@ -368,6 +391,12 @@ pub struct ExplainQueryInput {
 pub struct ListConnectionsOutput {
     pub default_connection: String,
     pub connections: Vec<database::ConnectionHealth>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnoseConnectionOutput {
+    pub diagnostics: Vec<database::ConnectionDiagnostic>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -611,6 +640,13 @@ impl ServerHandler for DbMcpService {
             let result = match name {
                 "list_connections" => {
                     self.list_connections(
+                        Self::parse_tool_input(request.arguments)
+                            .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?,
+                    )
+                    .await
+                }
+                "diagnose_connection" => {
+                    self.diagnose_connection(
                         Self::parse_tool_input(request.arguments)
                             .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?,
                     )

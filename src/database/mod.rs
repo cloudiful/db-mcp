@@ -21,9 +21,15 @@ use tracing::{info, warn};
 
 use crate::{config, readonly_sql};
 
+mod diagnostics;
 pub mod oracle;
+mod oracle_jdbc;
+mod oracle_metadata;
+mod oracle_query;
 pub mod postgres;
 pub mod sqlite;
+
+pub use diagnostics::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -36,6 +42,9 @@ pub struct ConnectionHealth {
     pub last_checked_at: Option<String>,
     pub last_successful_at: Option<String>,
     pub last_error: Option<String>,
+    pub failure_phase: Option<String>,
+    pub last_error_chain: Vec<String>,
+    pub probe_checks: Vec<ProbeCheck>,
 }
 
 pub type ConnectionInfo = ConnectionHealth;
@@ -214,7 +223,9 @@ impl Limits {
 #[async_trait]
 pub trait DatabaseConnection: Send + Sync {
     fn info(&self) -> ConnectionInfo;
+    fn target_summary(&self) -> String;
     async fn ping(&self) -> Result<()>;
+    async fn diagnose(&self, deep: bool) -> ConnectionDiagnostic;
     async fn list_schemas(&self, filter: Option<&str>, limit: usize) -> Result<Vec<SchemaInfo>>;
     async fn list_tables(
         &self,
@@ -303,11 +314,31 @@ impl DatabaseConnection for FailedConnection {
             last_checked_at: None,
             last_successful_at: None,
             last_error: Some(self.error.clone()),
+            failure_phase: Some("config".to_string()),
+            last_error_chain: vec![self.error.clone()],
+            probe_checks: vec![],
         }
+    }
+
+    fn target_summary(&self) -> String {
+        "<unavailable>".to_string()
     }
 
     async fn ping(&self) -> Result<()> {
         Err(self.unavailable_error("ping"))
+    }
+
+    async fn diagnose(&self, _deep: bool) -> ConnectionDiagnostic {
+        let error = self.unavailable_error("diagnose");
+        diagnostic_from_checks(
+            self.info(),
+            vec![probe_check_result(
+                "config",
+                self.target_summary(),
+                std::time::Duration::ZERO,
+                Err(error),
+            )],
+        )
     }
 
     async fn list_schemas(&self, _filter: Option<&str>, _limit: usize) -> Result<Vec<SchemaInfo>> {
@@ -428,6 +459,9 @@ impl Manager {
                 last_checked_at: None,
                 last_successful_at: None,
                 last_error: None,
+                failure_phase: None,
+                last_error_chain: vec![],
+                probe_checks: vec![],
             };
             slots.insert(
                 info.name.clone(),
@@ -499,6 +533,22 @@ impl Manager {
         })
     }
 
+    pub async fn diagnose(&self, name: Option<&str>, deep: bool) -> Result<Vec<ConnectionDiagnostic>> {
+        if let Some(name) = name {
+            let slot = self
+                .slots
+                .get(name)
+                .with_context(|| format!("connection {name:?} not found"))?;
+            return Ok(vec![slot.conn.diagnose(deep).await]);
+        }
+        let mut tasks = vec![];
+        for slot in self.slots.values() {
+            let conn = slot.conn.clone();
+            tasks.push(async move { conn.diagnose(deep).await });
+        }
+        Ok(futures_util::future::join_all(tasks).await)
+    }
+
     async fn refresh_all(&self) {
         let mut tasks = vec![];
         for slot in self.slots.values() {
@@ -519,22 +569,24 @@ impl Manager {
 
     async fn refresh_slot(slot: Slot) {
         let now = chrono_like_now();
-        let ping_result = slot.conn.ping().await;
-        let info = slot.conn.info();
+        let diagnostic = slot.conn.diagnose(false).await;
         let mut health = slot.health.lock().expect("health poisoned");
         health.last_checked_at = Some(now.clone());
-        match ping_result {
-            Ok(()) => {
+        health.default_schema = diagnostic.default_schema;
+        health.failure_phase = diagnostic.failure_phase;
+        health.last_error_chain = diagnostic.last_error_chain;
+        health.probe_checks = diagnostic.checks;
+        match diagnostic.available {
+            true => {
                 health.available = true;
                 health.status = "up".to_string();
                 health.last_successful_at = Some(now);
                 health.last_error = None;
-                health.default_schema = info.default_schema;
             }
-            Err(err) => {
+            false => {
                 health.available = false;
                 health.status = "down".to_string();
-                health.last_error = Some(err.to_string());
+                health.last_error = diagnostic.last_error;
             }
         }
     }
@@ -660,7 +712,7 @@ async fn open_connection(
                 .with_context(|| format!("oracle config missing name={}", cfg.name))?
                 .clone(),
             limits.clone(),
-        ))),
+        )?)),
         other => bail!("unsupported driver {other}"),
     }
 }

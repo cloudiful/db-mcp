@@ -46,7 +46,7 @@ impl PostgresConnection {
                 .expect("default_schema poisoned") = self.config.schema.trim().to_string();
             return Ok(());
         }
-        let schema: Option<String> = sqlx::query_scalar("select current_schema()")
+        let schema: Option<String> = sqlx::query_scalar("select current_schema()::text")
             .fetch_optional(&self.pool)
             .await
             .context("current_schema")?;
@@ -76,16 +76,26 @@ impl DatabaseConnection for PostgresConnection {
             last_checked_at: None,
             last_successful_at: None,
             last_error: None,
+            failure_phase: None,
+            last_error_chain: vec![],
+            probe_checks: vec![],
         }
     }
 
+    fn target_summary(&self) -> String {
+        redact_postgres_dsn(&self.config.dsn)
+    }
+
     async fn ping(&self) -> Result<()> {
-        tokio::time::timeout(self.limits.query_timeout, self.pool.acquire())
-            .await
-            .with_context(|| {
-                format!(
-                    "postgres ping timeout name={} target={}",
-                    self.name,
+        tokio::time::timeout(
+            self.limits.query_timeout,
+            sqlx::query_scalar::<_, i64>("select 1").fetch_one(&self.pool),
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "postgres ping timeout name={} target={}",
+                self.name,
                     redact_postgres_dsn(&self.config.dsn)
                 )
             })?
@@ -98,6 +108,90 @@ impl DatabaseConnection for PostgresConnection {
             })?;
         self.refresh_schema().await?;
         Ok(())
+    }
+
+    async fn diagnose(&self, deep: bool) -> ConnectionDiagnostic {
+        let target = self.target_summary();
+        let mut checks = vec![];
+        checks.push(
+            timed_probe("config", target.clone(), || async {
+                if self.config.dsn.trim().is_empty() {
+                    anyhow::bail!("postgres dsn is empty");
+                }
+                Ok(())
+            })
+            .await,
+        );
+        if checks.last().is_some_and(|check| check.status != "up") {
+            return diagnostic_from_checks(self.info(), checks);
+        }
+
+        checks.push(
+            timed_probe("connect/acquire", target.clone(), || async {
+                tokio::time::timeout(self.limits.query_timeout, self.pool.acquire())
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "postgres acquire timeout name={} target={}",
+                            self.name,
+                            redact_postgres_dsn(&self.config.dsn)
+                        )
+                    })?
+                    .with_context(|| {
+                        format!(
+                            "postgres acquire failed name={} target={}",
+                            self.name,
+                            redact_postgres_dsn(&self.config.dsn)
+                        )
+                    })?;
+                Ok(())
+            })
+            .await,
+        );
+        if checks.last().is_some_and(|check| check.status != "up") {
+            return diagnostic_from_checks(self.info(), checks);
+        }
+
+        checks.push(
+            timed_probe("pingQuery", target.clone(), || async {
+                tokio::time::timeout(
+                    self.limits.query_timeout,
+                    sqlx::query_scalar::<_, i64>("select 1").fetch_one(&self.pool),
+                )
+                .await
+                .context("postgres ping query timeout")?
+                .context("postgres ping query failed")?;
+                Ok(())
+            })
+            .await,
+        );
+        if checks.last().is_some_and(|check| check.status != "up") {
+            return diagnostic_from_checks(self.info(), checks);
+        }
+
+        checks.push(
+            timed_probe("defaultSchema", target.clone(), || async {
+                self.refresh_schema().await.context("refresh postgres default schema")
+            })
+            .await,
+        );
+        if checks.last().is_some_and(|check| check.status != "up") || !deep {
+            return diagnostic_from_checks(self.info(), checks);
+        }
+
+        checks.push(
+            timed_probe("metadataSmokeTest", target, || async {
+                sqlx::query_scalar::<_, i64>(
+                    "select count(*)::bigint from information_schema.schemata",
+                )
+                .fetch_one(&self.pool)
+                .await
+                .context("postgres metadata smoke test")?;
+                Ok(())
+            })
+            .await,
+        );
+        diagnostic_from_checks(self.info(), checks)
     }
 
     async fn list_schemas(&self, filter: Option<&str>, limit: usize) -> Result<Vec<SchemaInfo>> {

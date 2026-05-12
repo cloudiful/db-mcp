@@ -49,15 +49,85 @@ impl DatabaseConnection for SQLiteConnection {
             last_checked_at: None,
             last_successful_at: None,
             last_error: None,
+            failure_phase: None,
+            last_error_chain: vec![],
+            probe_checks: vec![],
         }
     }
 
+    fn target_summary(&self) -> String {
+        self.dsn.clone()
+    }
+
     async fn ping(&self) -> Result<()> {
-        tokio::time::timeout(self.limits.query_timeout, self.pool.acquire())
-            .await
-            .with_context(|| format!("sqlite ping timeout name={} dsn={}", self.name, self.dsn))?
-            .with_context(|| format!("sqlite ping failed name={} dsn={}", self.name, self.dsn))?;
+        tokio::time::timeout(
+            self.limits.query_timeout,
+            sqlx::query_scalar::<_, i64>("select 1").fetch_one(&self.pool),
+        )
+        .await
+        .with_context(|| format!("sqlite ping timeout name={} dsn={}", self.name, self.dsn))?
+        .with_context(|| format!("sqlite ping failed name={} dsn={}", self.name, self.dsn))?;
         Ok(())
+    }
+
+    async fn diagnose(&self, deep: bool) -> ConnectionDiagnostic {
+        let target = self.target_summary();
+        let mut checks = vec![];
+        checks.push(
+            timed_probe("config", target.clone(), || async {
+                if self.dsn.trim().is_empty() {
+                    anyhow::bail!("sqlite dsn is empty");
+                }
+                Ok(())
+            })
+            .await,
+        );
+        if checks.last().is_some_and(|check| check.status != "up") {
+            return diagnostic_from_checks(self.info(), checks);
+        }
+
+        checks.push(
+            timed_probe("connect/acquire", target.clone(), || async {
+                tokio::time::timeout(self.limits.query_timeout, self.pool.acquire())
+                    .await
+                    .with_context(|| format!("sqlite acquire timeout name={} dsn={}", self.name, self.dsn))?
+                    .with_context(|| format!("sqlite acquire failed name={} dsn={}", self.name, self.dsn))?;
+                Ok(())
+            })
+            .await,
+        );
+        if checks.last().is_some_and(|check| check.status != "up") {
+            return diagnostic_from_checks(self.info(), checks);
+        }
+
+        checks.push(
+            timed_probe("pingQuery", target.clone(), || async {
+                tokio::time::timeout(
+                    self.limits.query_timeout,
+                    sqlx::query_scalar::<_, i64>("select 1").fetch_one(&self.pool),
+                )
+                .await
+                .context("sqlite ping query timeout")?
+                .context("sqlite ping query failed")?;
+                Ok(())
+            })
+            .await,
+        );
+        if checks.last().is_some_and(|check| check.status != "up") || !deep {
+            return diagnostic_from_checks(self.info(), checks);
+        }
+
+        checks.push(
+            timed_probe("metadataSmokeTest", target, || async {
+                sqlx::query("pragma database_list")
+                    .fetch_all(&self.pool)
+                    .await
+                    .context("sqlite metadata smoke test")?;
+                Ok(())
+            })
+            .await,
+        );
+        diagnostic_from_checks(self.info(), checks)
     }
 
     async fn list_schemas(&self, filter: Option<&str>, limit: usize) -> Result<Vec<SchemaInfo>> {

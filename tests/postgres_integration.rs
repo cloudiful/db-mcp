@@ -26,6 +26,12 @@ fn test_config() -> Config {
     }
 }
 
+fn test_config_without_schema() -> Config {
+    let mut cfg = test_config();
+    cfg.connections[0].postgres.as_mut().unwrap().schema.clear();
+    cfg
+}
+
 #[tokio::test]
 async fn postgres_manager_health_is_up() {
     let cfg = test_config();
@@ -39,6 +45,38 @@ async fn postgres_manager_health_is_up() {
         "postgres should be reachable"
     );
     assert_eq!(health.connections[0].driver, "postgres");
+}
+
+#[tokio::test]
+async fn postgres_manager_health_is_up_without_configured_schema() {
+    let cfg = test_config_without_schema();
+    let manager = Manager::new(&cfg).await.expect("manager init");
+    let health = manager.health(None, true).await.expect("health");
+
+    assert!(
+        health.connections[0].available,
+        "postgres should refresh current_schema()::text"
+    );
+    assert_eq!(health.connections[0].default_schema, "public");
+}
+
+#[tokio::test]
+async fn postgres_diagnostics_include_probe_checks() {
+    let cfg = test_config();
+    let manager = Manager::new(&cfg).await.expect("manager init");
+    let diagnostics = manager
+        .diagnose(Some("postgres"), true)
+        .await
+        .expect("diagnostics");
+
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0].available);
+    assert!(
+        diagnostics[0]
+            .checks
+            .iter()
+            .any(|check| check.phase == "metadataSmokeTest")
+    );
 }
 
 #[tokio::test]
