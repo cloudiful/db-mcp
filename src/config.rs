@@ -346,7 +346,7 @@ fn parse_transport(value: &str) -> Result<TransportMode> {
 fn load_env_connections() -> Vec<ConnectionConfig> {
     let mut out = vec![];
 
-    if let Ok(dsn) = env::var("DBMCP_POSTGRES_DSN").or_else(|_| env::var("DATABASE_URL")) {
+    if let Ok(dsn) = env::var("DBMCP_POSTGRES_DSN") {
         out.push(ConnectionConfig {
             name: env::var("DBMCP_POSTGRES_NAME").unwrap_or_else(|_| "postgres".to_string()),
             driver: "postgres".to_string(),
