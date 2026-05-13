@@ -4,8 +4,7 @@ WORKDIR /app
 RUN cargo install cargo-chef
 
 FROM chef AS planner
-COPY Cargo.toml Cargo.lock ./
-COPY src ./src
+COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
@@ -14,11 +13,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     cargo chef cook --release --recipe-path recipe.json
 
-COPY Cargo.toml Cargo.lock ./
-COPY src ./src
+COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    cargo build --release --locked --bin dbmcp
+    cargo build --release --bin dbmcp
 
 FROM dockerhub.cloud1ful.com/library/debian:trixie-slim AS runtime
 

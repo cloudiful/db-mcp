@@ -199,8 +199,8 @@ impl Config {
         let http_addr = self.server.http_addr.trim();
         if http_addr.is_empty() {
             self.server.http_addr = "0.0.0.0:8080".to_string();
-        } else if let Some(port) = http_addr.strip_prefix(':') {
-            self.server.http_addr = format!("0.0.0.0:{port}");
+        } else {
+            self.server.http_addr = cloudiful_server::normalize_listen_addr(http_addr);
         }
         if self.server.http_path.trim().is_empty() || !self.server.http_path.starts_with('/') {
             self.server.http_path = "/mcp".to_string();
