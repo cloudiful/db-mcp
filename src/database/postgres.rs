@@ -2,6 +2,8 @@ use anyhow::{Context, Result};
 use sqlx::{AnyPool, Row};
 use std::sync::{Arc, RwLock};
 
+use crate::config;
+
 use super::*;
 
 #[derive(Clone)]
@@ -96,16 +98,16 @@ impl DatabaseConnection for PostgresConnection {
             format!(
                 "postgres ping timeout name={} target={}",
                 self.name,
-                    redact_postgres_dsn(&self.config.dsn)
-                )
-            })?
-            .with_context(|| {
-                format!(
-                    "postgres ping failed name={} target={}",
-                    self.name,
-                    redact_postgres_dsn(&self.config.dsn)
-                )
-            })?;
+                redact_postgres_dsn(&self.config.dsn)
+            )
+        })?
+        .with_context(|| {
+            format!(
+                "postgres ping failed name={} target={}",
+                self.name,
+                redact_postgres_dsn(&self.config.dsn)
+            )
+        })?;
         self.refresh_schema().await?;
         Ok(())
     }
@@ -171,7 +173,9 @@ impl DatabaseConnection for PostgresConnection {
 
         checks.push(
             timed_probe("defaultSchema", target.clone(), || async {
-                self.refresh_schema().await.context("refresh postgres default schema")
+                self.refresh_schema()
+                    .await
+                    .context("refresh postgres default schema")
             })
             .await,
         );
@@ -557,46 +561,14 @@ impl DatabaseConnection for PostgresConnection {
         max_rows: usize,
         limits: &Limits,
     ) -> Result<QueryResult> {
-        collect_rows(&self.pool, sql, max_rows, limits).await
+        postgres_query::execute_query(&self.pool, sql, max_rows, limits).await
     }
 
     async fn explain_query(&self, sql: &str, limits: &Limits) -> Result<ExplainResultData> {
-        let normalized = readonly_sql::normalize_read_only_query(sql)?;
-        let rows = sqlx::query(&format!("EXPLAIN {normalized}"))
-            .fetch_all(&self.pool)
-            .await?;
-        let mut lines = vec![];
-        for row in rows.into_iter().take(limits.explain_max_lines) {
-            let line: String = row.try_get::<String, _>(0).unwrap_or_default();
-            lines.push(line);
-        }
-        Ok(ExplainResultData {
-            format: "text".to_string(),
-            plan_lines: lines,
-            notice: None,
-        })
+        postgres_query::explain_query(&self.pool, sql, limits).await
     }
 }
 
 fn quote_ident(value: &str) -> String {
     format!("\"{}\"", value.replace('"', "\"\""))
-}
-
-fn redact_postgres_dsn(raw: &str) -> String {
-    if let Ok(mut url) = url::Url::parse(raw) {
-        if url.password().is_some() {
-            let _ = url.set_password(Some("REDACTED"));
-        }
-        return url.to_string();
-    }
-    raw.split_whitespace()
-        .map(|part| {
-            if part.to_lowercase().starts_with("password=") {
-                "password=REDACTED".to_string()
-            } else {
-                part.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
 }

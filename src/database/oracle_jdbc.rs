@@ -34,7 +34,11 @@ pub(super) fn parse_oracle_jdbc_url(cfg: &config::OracleConfig) -> Result<Oracle
             .split_once('/')
             .context("oracle service JDBC URL must be jdbc:oracle:thin:@//host:port/service")?;
         let (host, port) = parse_host_port(host_port)?;
-        (host, port, OracleService::ServiceName(service_name.to_string()))
+        (
+            host,
+            port,
+            OracleService::ServiceName(service_name.to_string()),
+        )
     } else {
         let parts = rest.split(':').collect::<Vec<_>>();
         if parts.len() != 3 {
@@ -43,7 +47,11 @@ pub(super) fn parse_oracle_jdbc_url(cfg: &config::OracleConfig) -> Result<Oracle
         let port = parts[1]
             .parse::<u16>()
             .with_context(|| format!("invalid oracle jdbc port {:?}", parts[1]))?;
-        (parts[0].to_string(), port, OracleService::Sid(parts[2].to_string()))
+        (
+            parts[0].to_string(),
+            port,
+            OracleService::Sid(parts[2].to_string()),
+        )
     };
 
     if host.trim().is_empty() {
@@ -98,9 +106,8 @@ mod tests {
 
     #[test]
     fn parses_service_jdbc_url() {
-        let spec =
-            parse_oracle_jdbc_url(&cfg("jdbc:oracle:thin:@//db.example.com:1521/FREEPDB1"))
-                .unwrap();
+        let spec = parse_oracle_jdbc_url(&cfg("jdbc:oracle:thin:@//db.example.com:1521/FREEPDB1"))
+            .unwrap();
         assert_eq!(spec.host, "db.example.com");
         assert_eq!(spec.port, 1521);
         assert!(

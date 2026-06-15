@@ -36,7 +36,10 @@ pub(super) async fn explain_query(
         .context("oracle explain failed")?;
     let plan = tokio::time::timeout(
         db.limits.query_timeout,
-        conn.query("select plan_table_output from table(dbms_xplan.display())", &binds),
+        conn.query(
+            "select plan_table_output from table(dbms_xplan.display())",
+            &binds,
+        ),
     )
     .await
     .context("oracle dbms_xplan timeout")?
@@ -94,9 +97,7 @@ fn value_to_json(value: &OracleValue) -> Value {
     match value {
         OracleValue::Null => Value::Null,
         OracleValue::String(v) => Value::String(v.clone()),
-        OracleValue::Bytes(v) => {
-            Value::String(base64::engine::general_purpose::STANDARD.encode(v))
-        }
+        OracleValue::Bytes(v) => Value::String(base64::engine::general_purpose::STANDARD.encode(v)),
         OracleValue::Integer(v) => Value::from(*v),
         OracleValue::Float(v) => Value::from(*v),
         OracleValue::Number(v) => v

@@ -378,7 +378,11 @@ fn fallback_create_table(schema: &str, table: &str, columns: &[ColumnInfo]) -> S
             quote_ident(&col.name),
             col.data_type,
             nullable,
-            if idx + 1 == columns.len() { "\n" } else { ",\n" }
+            if idx + 1 == columns.len() {
+                "\n"
+            } else {
+                ",\n"
+            }
         ));
     }
     ddl.push(')');

@@ -139,7 +139,7 @@ fn log_startup_plan(cfg: &config::Config) {
             "database connecting name={} driver={} target={}",
             conn.name,
             conn.driver,
-            connection_target_summary(conn)
+            database::connection_target_summary(conn)
         );
     }
 }
@@ -187,52 +187,8 @@ fn split_listen_addr(addr: &str) -> (String, String) {
     }
 }
 
-fn connection_target_summary(conn: &config::ConnectionConfig) -> String {
-    match conn.driver.as_str() {
-        "oracle" => conn
-            .oracle
-            .as_ref()
-            .map(|c| c.jdbc_url.clone())
-            .unwrap_or_else(|| "oracle:<missing>".to_string()),
-        "postgres" => conn
-            .postgres
-            .as_ref()
-            .map(|c| redact_postgres_dsn(&c.dsn))
-            .unwrap_or_else(|| "postgres:<missing>".to_string()),
-        "sqlite" => conn
-            .sqlite
-            .as_ref()
-            .map(|c| c.dsn.clone())
-            .unwrap_or_else(|| "sqlite:<missing>".to_string()),
-        _ => "<unknown>".to_string(),
-    }
-}
-
 fn debug_requested() -> bool {
     env::var("DBMCP_DEBUG")
         .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
         .unwrap_or(false)
-}
-
-fn redact_postgres_dsn(raw: &str) -> String {
-    if let Ok(mut url) = url::Url::parse(raw) {
-        if url.password().is_some() {
-            let username = url.username().to_string();
-            let _ = url.set_password(Some("REDACTED"));
-            if username.is_empty() {
-                let _ = url.set_username("");
-            }
-        }
-        return url.to_string();
-    }
-    raw.split_whitespace()
-        .map(|part| {
-            if part.to_lowercase().starts_with("password=") {
-                "password=REDACTED".to_string()
-            } else {
-                part.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
 }

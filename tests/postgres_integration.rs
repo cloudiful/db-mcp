@@ -101,3 +101,27 @@ async fn postgres_can_list_schemas_and_run_select() {
     assert_eq!(result.row_count, 1);
     assert_eq!(result.rows.len(), 1);
 }
+
+#[tokio::test]
+async fn postgres_execute_query_serializes_uuid_columns() {
+    let cfg = test_config();
+    let manager = Manager::new(&cfg).await.expect("manager init");
+    let conn = manager.connection(Some("postgres")).expect("connection");
+
+    let result = conn
+        .execute_query(
+            "select '00000000-0000-0000-0000-000000000001'::uuid as request_id",
+            10,
+            manager.limits(),
+        )
+        .await
+        .expect("execute_query should serialize uuid columns");
+
+    assert_eq!(result.row_count, 1);
+    assert_eq!(
+        result.rows[0]
+            .get("request_id")
+            .and_then(|value| value.as_str()),
+        Some("00000000-0000-0000-0000-000000000001")
+    );
+}

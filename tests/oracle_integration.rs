@@ -34,7 +34,10 @@ async fn oracle_can_probe_and_query_when_configured() {
     let conn = manager.connection(Some("oracle")).expect("connection");
 
     let health = manager.health(Some("oracle"), true).await.expect("health");
-    assert!(health.connections[0].available, "oracle should be reachable");
+    assert!(
+        health.connections[0].available,
+        "oracle should be reachable"
+    );
 
     let schemas = conn
         .list_schemas(None, 5)

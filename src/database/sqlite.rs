@@ -2,6 +2,8 @@ use anyhow::{Context, Result};
 use sqlx::{AnyPool, Row};
 use std::sync::{Arc, RwLock};
 
+use crate::config;
+
 use super::*;
 
 #[derive(Clone)]
@@ -90,8 +92,12 @@ impl DatabaseConnection for SQLiteConnection {
             timed_probe("connect/acquire", target.clone(), || async {
                 tokio::time::timeout(self.limits.query_timeout, self.pool.acquire())
                     .await
-                    .with_context(|| format!("sqlite acquire timeout name={} dsn={}", self.name, self.dsn))?
-                    .with_context(|| format!("sqlite acquire failed name={} dsn={}", self.name, self.dsn))?;
+                    .with_context(|| {
+                        format!("sqlite acquire timeout name={} dsn={}", self.name, self.dsn)
+                    })?
+                    .with_context(|| {
+                        format!("sqlite acquire failed name={} dsn={}", self.name, self.dsn)
+                    })?;
                 Ok(())
             })
             .await,

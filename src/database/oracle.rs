@@ -2,11 +2,13 @@ use anyhow::{Context, Result};
 use oracle_rs::{Config as OracleRsConfig, Connection, Value as OracleValue};
 use std::sync::{Arc, RwLock};
 
+use crate::config;
+
+use super::*;
 use super::{
     oracle_jdbc::{OracleConnectSpec, OracleService, parse_oracle_jdbc_url},
     oracle_metadata, oracle_query,
 };
-use super::*;
 
 #[derive(Clone)]
 pub struct OracleConnection {
@@ -48,20 +50,23 @@ impl OracleConnection {
             ),
         };
         cfg = cfg.connect_timeout(self.limits.query_timeout);
-        tokio::time::timeout(self.limits.query_timeout, Connection::connect_with_config(cfg))
-            .await
-            .with_context(|| {
-                format!(
-                    "oracle connect timeout name={} target={}",
-                    self.name, self.spec.target
-                )
-            })?
-            .with_context(|| {
-                format!(
-                    "oracle connect failed name={} target={}",
-                    self.name, self.spec.target
-                )
-            })
+        tokio::time::timeout(
+            self.limits.query_timeout,
+            Connection::connect_with_config(cfg),
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "oracle connect timeout name={} target={}",
+                self.name, self.spec.target
+            )
+        })?
+        .with_context(|| {
+            format!(
+                "oracle connect failed name={} target={}",
+                self.name, self.spec.target
+            )
+        })
     }
 
     pub(super) async fn query(&self, sql: &str) -> Result<oracle_rs::QueryResult> {
@@ -185,7 +190,9 @@ impl DatabaseConnection for OracleConnection {
 
         checks.push(
             timed_probe("metadataSmokeTest", target, || async {
-                self.query("select count(*) from all_users").await.map(|_| ())
+                self.query("select count(*) from all_users")
+                    .await
+                    .map(|_| ())
             })
             .await,
         );
