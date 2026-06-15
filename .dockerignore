@@ -1,6 +1,6 @@
 .git
 .gitignore
-.gitea
+.forgejo
 .gocache
 .gomodcache
 dbmcp

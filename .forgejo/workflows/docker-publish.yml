@@ -1,0 +1,83 @@
+name: Docker Publish
+run-name: Docker Publish by ${{ github.actor }}
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  resolve-tags:
+    runs-on: ubuntu-latest
+    outputs:
+      manifest_tag: ${{ steps.tags.outputs.manifest_tag }}
+      amd64_tag: ${{ steps.tags.outputs.amd64_tag }}
+      arm64_tag: ${{ steps.tags.outputs.arm64_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Resolve image tags
+        id: tags
+        uses: https://forgejo.cloud1ful.com/actions/workflows/actions/resolve-image-tags@v0.1.4
+
+  build-arm64:
+    runs-on: ubuntu-latest-arm
+    needs:
+      - resolve-tags
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Build and push arm64 image
+        uses: https://forgejo.cloud1ful.com/actions/workflows/actions/publish-rust-docker-image@v0.1.4
+        with:
+          dockerfile: ./Dockerfile
+          target: app-runtime
+          platform: linux/arm64
+          manifest_tag: ${{ needs.resolve-tags.outputs.manifest_tag }}
+          amd64_tag: ${{ needs.resolve-tags.outputs.amd64_tag }}
+          arm64_tag: ${{ needs.resolve-tags.outputs.arm64_tag }}
+          publish_amd64: "true"
+          username: ${{ github.actor }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
+
+  build-amd64:
+    runs-on: ubuntu-latest-amd64
+    needs:
+      - resolve-tags
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Build and push amd64 image
+        uses: https://forgejo.cloud1ful.com/actions/workflows/actions/publish-rust-docker-image@v0.1.4
+        with:
+          dockerfile: ./Dockerfile
+          target: app-runtime
+          platform: linux/amd64
+          manifest_tag: ${{ needs.resolve-tags.outputs.manifest_tag }}
+          amd64_tag: ${{ needs.resolve-tags.outputs.amd64_tag }}
+          arm64_tag: ${{ needs.resolve-tags.outputs.arm64_tag }}
+          publish_amd64: "true"
+          username: ${{ github.actor }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
+
+  publish-manifest:
+    runs-on: ubuntu-latest
+    needs:
+      - resolve-tags
+      - build-arm64
+      - build-amd64
+    steps:
+      - name: Publish multi-arch manifest
+        uses: https://forgejo.cloud1ful.com/actions/workflows/actions/publish-docker-manifest@v0.1.4
+        with:
+          manifest_tag: ${{ needs.resolve-tags.outputs.manifest_tag }}
+          amd64_tag: ${{ needs.resolve-tags.outputs.amd64_tag }}
+          arm64_tag: ${{ needs.resolve-tags.outputs.arm64_tag }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
