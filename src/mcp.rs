@@ -65,11 +65,11 @@ impl DbMcpService {
             ),
             tool_schema::<ExecuteQueryInput>(
                 "execute_query",
-                "Run a read-only SELECT or WITH query. Results are truncated to protect MCP context.",
+                "Run a query. Results are truncated to protect MCP context.",
             ),
             tool_schema::<ExplainQueryInput>(
                 "explain_query",
-                "Explain a read-only SELECT or WITH query without executing data changes.",
+                "Explain a query and return the execution plan.",
             ),
         ]
     }
@@ -164,7 +164,7 @@ impl ServerHandler for DbMcpService {
                 "Suggested step-by-step workflow for exploring an unfamiliar database safely.",
                 vec![PromptMessage::new_text(
                     PromptMessageRole::User,
-                    "1. Start with list_connections or db://connections.\n2. Inspect schemas, then tables.\n3. Use describe_table, list_constraints, and list_indexes before execute_query.\n4. Prefer read-only queries only.",
+                    "1. Start with list_connections or db://connections.\n2. Inspect schemas, then tables.\n3. Use describe_table, list_constraints, and list_indexes before execute_query.\n4. Prefer small, scoped queries first.",
                 )],
             )),
             "inspect_table" => {
@@ -183,7 +183,7 @@ impl ServerHandler for DbMcpService {
                     vec![PromptMessage::new_text(
                         PromptMessageRole::User,
                         format!(
-                            "Inspect {schema}.{table} on {connection}: describe the table, list constraints and indexes, review comments, then draft a small read-only SELECT."
+                            "Inspect {schema}.{table} on {connection}: describe the table, list constraints and indexes, review comments, then draft a small query."
                         ),
                     )],
                 ))

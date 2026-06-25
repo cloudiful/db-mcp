@@ -371,8 +371,7 @@ impl DatabaseConnection for SQLiteConnection {
     }
 
     async fn explain_query(&self, sql: &str, limits: &Limits) -> Result<ExplainResultData> {
-        let normalized = crate::readonly_sql::normalize_read_only_query(sql)?;
-        let rows = sqlx::query(&format!("EXPLAIN QUERY PLAN {normalized}"))
+        let rows = sqlx::query(&format!("EXPLAIN QUERY PLAN {sql}"))
             .fetch_all(&self.pool)
             .await?;
         let mut lines = vec![];

@@ -17,6 +17,7 @@ fn oracle_config() -> Option<Config> {
                 jdbc_url,
                 username,
                 password,
+                read_only: true,
             }),
             postgres: None,
             sqlite: None,

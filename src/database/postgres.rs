@@ -561,11 +561,12 @@ impl DatabaseConnection for PostgresConnection {
         max_rows: usize,
         limits: &Limits,
     ) -> Result<QueryResult> {
-        postgres_query::execute_query(&self.pool, sql, max_rows, limits).await
+        postgres_query::execute_query(&self.pool, self.config.read_only, sql, max_rows, limits)
+            .await
     }
 
     async fn explain_query(&self, sql: &str, limits: &Limits) -> Result<ExplainResultData> {
-        postgres_query::explain_query(&self.pool, sql, limits).await
+        postgres_query::explain_query(&self.pool, self.config.read_only, sql, limits).await
     }
 }
 

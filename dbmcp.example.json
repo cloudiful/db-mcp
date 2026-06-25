@@ -23,21 +23,24 @@
       "oracle": {
         "jdbcUrl": "jdbc:oracle:thin:@localhost:1521:XE",
         "username": "readuser",
-        "password": "readuser"
+        "password": "readuser",
+        "readOnly": true
       }
     },
     {
       "name": "postgres-dev",
       "driver": "postgres",
       "postgres": {
-        "dsn": "postgres://reader:reader@localhost:5432/app?sslmode=disable"
+        "dsn": "postgres://reader:reader@localhost:5432/app?sslmode=disable",
+        "readOnly": true
       }
     },
     {
       "name": "sqlite-dev",
       "driver": "sqlite",
       "sqlite": {
-        "dsn": "file:./app.db?mode=ro"
+        "dsn": "file:./app.db?mode=ro",
+        "readOnly": true
       }
     }
   ]

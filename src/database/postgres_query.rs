@@ -1,26 +1,76 @@
 use anyhow::{Context, Result, bail};
 use futures_util::TryStreamExt;
 use serde_json::{Map, Value};
-use sqlx::{AnyPool, Row};
+use sqlx::{AnyPool, Executor, Row};
 
-use crate::readonly_sql;
-
-use super::{ExplainResultData, Limits, QueryColumn, QueryResult, serialize_value};
+use super::{
+    ExplainResultData, Limits, QueryColumn, QueryResult, execute_sql_with_connection,
+    serialize_value,
+};
 
 pub async fn execute_query(
     pool: &AnyPool,
+    read_only: bool,
     sql: &str,
     requested_max_rows: usize,
     limits: &Limits,
 ) -> Result<QueryResult> {
-    let normalized = readonly_sql::normalize_read_only_query(sql)?;
+    let mut tx = pool.begin().await?;
+    if read_only {
+        let sql = format!("select * from ({sql}) as __dbmcp_read_only_guard");
+        tx.execute("set transaction read only").await?;
+        let result = execute_query_rows(&mut *tx, &sql, requested_max_rows, limits).await;
+        let _ = tx.rollback().await;
+        result
+    } else {
+        let result = execute_sql_with_connection(&mut *tx, sql, requested_max_rows, limits).await;
+        tx.commit().await?;
+        result
+    }
+}
+
+pub async fn explain_query(
+    pool: &AnyPool,
+    read_only: bool,
+    sql: &str,
+    limits: &Limits,
+) -> Result<ExplainResultData> {
+    let mut tx = pool.begin().await?;
+    if read_only {
+        tx.execute("set transaction read only").await?;
+    }
+    let rows = sqlx::query(&format!("EXPLAIN {sql}"))
+        .fetch_all(&mut *tx)
+        .await?;
+    let mut lines = vec![];
+    for row in rows.into_iter().take(limits.explain_max_lines) {
+        let line: String = row.try_get::<String, _>(0).unwrap_or_default();
+        lines.push(line);
+    }
+    tx.rollback().await?;
+    Ok(ExplainResultData {
+        format: "text".to_string(),
+        plan_lines: lines,
+        notice: None,
+    })
+}
+
+async fn execute_query_rows<'e, E>(
+    executor: E,
+    sql: &str,
+    requested_max_rows: usize,
+    limits: &Limits,
+) -> Result<QueryResult>
+where
+    E: Executor<'e, Database = sqlx::Any>,
+{
     let applied_max_rows = limits.normalize_max_rows(requested_max_rows);
     let started = std::time::Instant::now();
     let fetch_limit = applied_max_rows.saturating_add(1);
     let wrapped = format!(
-        "select row_to_json(__dbmcp_row)::text as __dbmcp_row_json from ({normalized}) as __dbmcp_row limit {fetch_limit}"
+        "select row_to_json(__dbmcp_row)::text as __dbmcp_row_json from ({sql}) as __dbmcp_row limit {fetch_limit}"
     );
-    let mut row_stream = sqlx::query(&wrapped).fetch(pool);
+    let mut row_stream = sqlx::query(&wrapped).fetch(executor);
     let mut rows = vec![];
     let mut columns = vec![];
     let mut row_count = 0usize;
@@ -90,27 +140,6 @@ pub async fn execute_query(
             None
         },
         execution_time: format!("{:?}", started.elapsed()),
-    })
-}
-
-pub async fn explain_query(
-    pool: &AnyPool,
-    sql: &str,
-    limits: &Limits,
-) -> Result<ExplainResultData> {
-    let normalized = readonly_sql::normalize_read_only_query(sql)?;
-    let rows = sqlx::query(&format!("EXPLAIN {normalized}"))
-        .fetch_all(pool)
-        .await?;
-    let mut lines = vec![];
-    for row in rows.into_iter().take(limits.explain_max_lines) {
-        let line: String = row.try_get::<String, _>(0).unwrap_or_default();
-        lines.push(line);
-    }
-    Ok(ExplainResultData {
-        format: "text".to_string(),
-        plan_lines: lines,
-        notice: None,
     })
 }
 

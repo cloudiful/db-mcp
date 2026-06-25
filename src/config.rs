@@ -125,25 +125,58 @@ impl Default for ConnectionConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct OracleConfig {
     pub jdbc_url: String,
     pub username: String,
     pub password: String,
+    pub read_only: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+impl Default for OracleConfig {
+    fn default() -> Self {
+        Self {
+            jdbc_url: String::new(),
+            username: String::new(),
+            password: String::new(),
+            read_only: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct PostgresConfig {
     pub dsn: String,
     pub schema: String,
+    pub read_only: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+impl Default for PostgresConfig {
+    fn default() -> Self {
+        Self {
+            dsn: String::new(),
+            schema: String::new(),
+            read_only: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct SQLiteConfig {
     pub dsn: String,
+    pub read_only: bool,
+}
+
+impl Default for SQLiteConfig {
+    fn default() -> Self {
+        Self {
+            dsn: String::new(),
+            read_only: true,
+        }
+    }
 }
 
 #[derive(Debug, Parser)]
@@ -355,6 +388,10 @@ fn load_env_connections() -> Vec<ConnectionConfig> {
             postgres: Some(PostgresConfig {
                 dsn,
                 schema: env::var("DBMCP_POSTGRES_SCHEMA").unwrap_or_default(),
+                read_only: env::var("DBMCP_POSTGRES_READ_ONLY")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(true),
             }),
             oracle: None,
             sqlite: None,
@@ -365,7 +402,13 @@ fn load_env_connections() -> Vec<ConnectionConfig> {
         out.push(ConnectionConfig {
             name: env::var("DBMCP_SQLITE_NAME").unwrap_or_else(|_| "sqlite".to_string()),
             driver: "sqlite".to_string(),
-            sqlite: Some(SQLiteConfig { dsn }),
+            sqlite: Some(SQLiteConfig {
+                dsn,
+                read_only: env::var("DBMCP_SQLITE_READ_ONLY")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(true),
+            }),
             oracle: None,
             postgres: None,
         });
@@ -379,6 +422,10 @@ fn load_env_connections() -> Vec<ConnectionConfig> {
                 jdbc_url,
                 username: env::var("DBMCP_ORACLE_USERNAME").unwrap_or_default(),
                 password: env::var("DBMCP_ORACLE_PASSWORD").unwrap_or_default(),
+                read_only: env::var("DBMCP_ORACLE_READ_ONLY")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(true),
             }),
             postgres: None,
             sqlite: None,

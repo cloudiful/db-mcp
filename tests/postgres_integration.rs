@@ -19,6 +19,7 @@ fn test_config() -> Config {
             postgres: Some(PostgresConfig {
                 dsn: postgres_dsn(),
                 schema: "public".to_string(),
+                read_only: true,
             }),
             oracle: None,
             sqlite: None,
@@ -29,6 +30,12 @@ fn test_config() -> Config {
 fn test_config_without_schema() -> Config {
     let mut cfg = test_config();
     cfg.connections[0].postgres.as_mut().unwrap().schema.clear();
+    cfg
+}
+
+fn write_enabled_test_config() -> Config {
+    let mut cfg = test_config();
+    cfg.connections[0].postgres.as_mut().unwrap().read_only = false;
     cfg
 }
 
@@ -124,4 +131,35 @@ async fn postgres_execute_query_serializes_uuid_columns() {
             .and_then(|value| value.as_str()),
         Some("00000000-0000-0000-0000-000000000001")
     );
+}
+
+#[tokio::test]
+async fn postgres_read_only_transactions_reject_writes() {
+    let cfg = test_config();
+    let manager = Manager::new(&cfg).await.expect("manager init");
+    let conn = manager.connection(Some("postgres")).expect("connection");
+
+    let err = conn
+        .execute_query("create temporary table __dbmcp_ro_test(id int)", 10, manager.limits())
+        .await
+        .expect_err("read-only transaction should reject writes");
+
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("read-only")
+            || message.contains("read only")
+            || message.contains("cannot execute"),
+        "unexpected error: {message}"
+    );
+}
+
+#[tokio::test]
+async fn postgres_can_disable_read_only_transactions() {
+    let cfg = write_enabled_test_config();
+    let manager = Manager::new(&cfg).await.expect("manager init");
+    let conn = manager.connection(Some("postgres")).expect("connection");
+
+    conn.execute_query("create temporary table __dbmcp_rw_test(id int)", 10, manager.limits())
+        .await
+        .expect("write-enabled config should allow temp table creation");
 }

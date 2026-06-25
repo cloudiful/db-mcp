@@ -13,11 +13,25 @@ pub(super) async fn execute_query(
     max_rows: usize,
     limits: &Limits,
 ) -> Result<QueryResult> {
-    let normalized = crate::readonly_sql::normalize_read_only_query(sql)?;
     let applied_max_rows = limits.normalize_max_rows(max_rows);
-    let limited = limited_sql(&normalized, applied_max_rows);
+    let limited = limited_sql(sql, applied_max_rows);
     let started = Instant::now();
-    let result = conn.query(&limited).await?;
+    let session = conn.connect().await?;
+    if conn.config.read_only {
+        tokio::time::timeout(
+            conn.limits.query_timeout,
+            session.execute("set transaction read only", &[]),
+        )
+        .await
+        .context("oracle read-only transaction timeout")?
+        .context("oracle read-only transaction failed")?;
+    }
+    let result = tokio::time::timeout(conn.limits.query_timeout, session.query(&limited, &[]))
+        .await
+        .context("oracle query timeout")?
+        .context("oracle query failed")?;
+    let _ = session.rollback().await;
+    let _ = session.close().await;
     result_to_query_result(result, applied_max_rows, limits, started)
 }
 
@@ -26,11 +40,19 @@ pub(super) async fn explain_query(
     sql: &str,
     limits: &Limits,
 ) -> Result<ExplainResultData> {
-    let normalized = crate::readonly_sql::normalize_read_only_query(sql)?;
-    let explain_sql = format!("explain plan for {normalized}");
+    let explain_sql = format!("explain plan for {sql}");
     let conn = db.connect().await?;
     let binds: Vec<OracleValue> = vec![];
-    tokio::time::timeout(db.limits.query_timeout, conn.query(&explain_sql, &binds))
+    if db.config.read_only {
+        tokio::time::timeout(
+            db.limits.query_timeout,
+            conn.execute("set transaction read only", &binds),
+        )
+        .await
+        .context("oracle read-only transaction timeout")?
+        .context("oracle read-only transaction failed")?;
+    }
+    tokio::time::timeout(db.limits.query_timeout, conn.execute(&explain_sql, &binds))
         .await
         .context("oracle explain timeout")?
         .context("oracle explain failed")?;
@@ -44,6 +66,7 @@ pub(super) async fn explain_query(
     .await
     .context("oracle dbms_xplan timeout")?
     .context("oracle dbms_xplan failed")?;
+    let _ = conn.rollback().await;
     let _ = conn.close().await;
     Ok(ExplainResultData {
         format: "text".to_string(),

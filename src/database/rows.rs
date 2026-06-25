@@ -2,10 +2,8 @@ use anyhow::{Context, Result};
 use base64::Engine;
 use futures_util::TryStreamExt;
 use serde_json::{Map, Value};
-use sqlx::{AnyPool, Column, Row, TypeInfo, ValueRef, any::AnyRow};
+use sqlx::{Any, AnyConnection, AnyPool, Column, Executor, Row, TypeInfo, ValueRef, any::AnyQueryResult, any::AnyRow};
 use std::time::Instant;
-
-use crate::readonly_sql;
 
 use super::{Limits, QueryColumn, QueryResult};
 
@@ -58,13 +56,43 @@ pub async fn collect_rows(
     requested_max_rows: usize,
     limits: &Limits,
 ) -> Result<QueryResult> {
-    let normalized = readonly_sql::normalize_read_only_query(sql)?;
+    let mut conn = pool.acquire().await?;
+    execute_sql_with_connection(&mut conn, sql, requested_max_rows, limits).await
+}
+
+pub async fn execute_sql_with_connection(
+    conn: &mut AnyConnection,
+    sql: &str,
+    requested_max_rows: usize,
+    limits: &Limits,
+) -> Result<QueryResult> {
+    let describe = (&mut *conn).describe(sql).await?;
+    if describe.columns().is_empty() {
+        let started = Instant::now();
+        let result = tokio::time::timeout(limits.query_timeout, (&mut *conn).execute(sql))
+            .await
+            .context("query timeout")??;
+        return Ok(empty_result_from_query_result(result, limits, started));
+    }
+
+    collect_rows_with_executor(&mut *conn, sql, requested_max_rows, limits).await
+}
+
+pub async fn collect_rows_with_executor<'e, E>(
+    executor: E,
+    sql: &str,
+    requested_max_rows: usize,
+    limits: &Limits,
+) -> Result<QueryResult>
+where
+    E: Executor<'e, Database = Any>,
+{
     let applied_max_rows = limits.normalize_max_rows(requested_max_rows);
     let started = Instant::now();
     let mut rows = vec![];
     let mut row_count = 0usize;
     let mut columns = vec![];
-    let mut row_stream = sqlx::query(&normalized).fetch(pool);
+    let mut row_stream = sqlx::query(sql).fetch(executor);
     let mut truncated = false;
     let mut reasons = vec![];
     let mut total_chars = 0usize;
@@ -128,4 +156,21 @@ pub async fn collect_rows(
         },
         execution_time: format!("{:?}", started.elapsed()),
     })
+}
+
+fn empty_result_from_query_result(
+    result: AnyQueryResult,
+    limits: &Limits,
+    started: Instant,
+) -> QueryResult {
+    QueryResult {
+        columns: vec![],
+        rows: vec![],
+        row_count: result.rows_affected() as usize,
+        applied_max_rows: limits.normalize_max_rows(0),
+        truncated: false,
+        truncation_reasons: vec![],
+        notice: None,
+        execution_time: format!("{:?}", started.elapsed()),
+    }
 }

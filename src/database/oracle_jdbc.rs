@@ -93,6 +93,7 @@ mod tests {
             jdbc_url: url.to_string(),
             username: "readuser".to_string(),
             password: "secret".to_string(),
+            read_only: true,
         }
     }
 
