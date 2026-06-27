@@ -29,6 +29,7 @@ cargo run
 
 - PostgreSQL and Oracle connections default to `readOnly: true` and run queries inside read-only transactions
 - Set `readOnly: false` per connection to allow write-capable transactions
+- Single-statement queries may end with a trailing `;`; the server strips that terminator before execution, but multi-statement SQL scripts are still not supported
 - SQLite does not support transaction-level read-only enforcement here; use a read-only DSN such as `mode=ro` if needed
 - PostgreSQL and SQLite use `sqlx`
 - Oracle is kept behind the same interface, but not enabled in this build

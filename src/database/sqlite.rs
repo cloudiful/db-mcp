@@ -367,10 +367,12 @@ impl DatabaseConnection for SQLiteConnection {
         max_rows: usize,
         limits: &Limits,
     ) -> Result<QueryResult> {
+        let sql = strip_trailing_sql_terminator(sql);
         collect_rows(&self.pool, sql, max_rows, limits).await
     }
 
     async fn explain_query(&self, sql: &str, limits: &Limits) -> Result<ExplainResultData> {
+        let sql = strip_trailing_sql_terminator(sql);
         let rows = sqlx::query(&format!("EXPLAIN QUERY PLAN {sql}"))
             .fetch_all(&self.pool)
             .await?;

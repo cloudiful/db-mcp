@@ -110,6 +110,38 @@ async fn postgres_can_list_schemas_and_run_select() {
 }
 
 #[tokio::test]
+async fn postgres_execute_query_accepts_trailing_semicolon() {
+    let cfg = test_config();
+    let manager = Manager::new(&cfg).await.expect("manager init");
+    let conn = manager.connection(Some("postgres")).expect("connection");
+
+    let result = conn
+        .execute_query("select 1 as value;", 10, manager.limits())
+        .await
+        .expect("execute_query should tolerate trailing semicolons");
+
+    assert_eq!(result.row_count, 1);
+    assert_eq!(
+        result.rows[0].get("value").and_then(|value| value.as_i64()),
+        Some(1)
+    );
+}
+
+#[tokio::test]
+async fn postgres_explain_query_accepts_trailing_semicolon() {
+    let cfg = test_config();
+    let manager = Manager::new(&cfg).await.expect("manager init");
+    let conn = manager.connection(Some("postgres")).expect("connection");
+
+    let result = conn
+        .explain_query("select 1 as value;", manager.limits())
+        .await
+        .expect("explain_query should tolerate trailing semicolons");
+
+    assert!(!result.plan_lines.is_empty(), "plan should not be empty");
+}
+
+#[tokio::test]
 async fn postgres_execute_query_serializes_uuid_columns() {
     let cfg = test_config();
     let manager = Manager::new(&cfg).await.expect("manager init");
@@ -140,7 +172,11 @@ async fn postgres_read_only_transactions_reject_writes() {
     let conn = manager.connection(Some("postgres")).expect("connection");
 
     let err = conn
-        .execute_query("create temporary table __dbmcp_ro_test(id int)", 10, manager.limits())
+        .execute_query(
+            "create temporary table __dbmcp_ro_test(id int)",
+            10,
+            manager.limits(),
+        )
         .await
         .expect_err("read-only transaction should reject writes");
 
@@ -159,7 +195,11 @@ async fn postgres_can_disable_read_only_transactions() {
     let manager = Manager::new(&cfg).await.expect("manager init");
     let conn = manager.connection(Some("postgres")).expect("connection");
 
-    conn.execute_query("create temporary table __dbmcp_rw_test(id int)", 10, manager.limits())
-        .await
-        .expect("write-enabled config should allow temp table creation");
+    conn.execute_query(
+        "create temporary table __dbmcp_rw_test(id int)",
+        10,
+        manager.limits(),
+    )
+    .await
+    .expect("write-enabled config should allow temp table creation");
 }

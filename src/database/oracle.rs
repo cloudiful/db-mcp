@@ -261,10 +261,12 @@ impl DatabaseConnection for OracleConnection {
         max_rows: usize,
         limits: &Limits,
     ) -> Result<QueryResult> {
+        let sql = strip_trailing_sql_terminator(sql);
         oracle_query::execute_query(self, sql, max_rows, limits).await
     }
 
     async fn explain_query(&self, sql: &str, limits: &Limits) -> Result<ExplainResultData> {
+        let sql = strip_trailing_sql_terminator(sql);
         oracle_query::explain_query(self, sql, limits).await
     }
 }

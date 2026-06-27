@@ -51,4 +51,10 @@ async fn oracle_can_probe_and_query_when_configured() {
         .await
         .expect("execute_query should work");
     assert_eq!(result.row_count, 1);
+
+    let result = conn
+        .execute_query("select 1 as value from dual;", 10, manager.limits())
+        .await
+        .expect("execute_query should tolerate trailing semicolons");
+    assert_eq!(result.row_count, 1);
 }

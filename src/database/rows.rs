@@ -2,10 +2,24 @@ use anyhow::{Context, Result};
 use base64::Engine;
 use futures_util::TryStreamExt;
 use serde_json::{Map, Value};
-use sqlx::{Any, AnyConnection, AnyPool, Column, Executor, Row, TypeInfo, ValueRef, any::AnyQueryResult, any::AnyRow};
+use sqlx::{
+    Any, AnyConnection, AnyPool, Column, Executor, Row, TypeInfo, ValueRef, any::AnyQueryResult,
+    any::AnyRow,
+};
 use std::time::Instant;
 
 use super::{Limits, QueryColumn, QueryResult};
+
+// MCP callers often send SQL copied from consoles with a trailing terminator.
+// We accept that for single statements, but still do not support multi-statement scripts.
+pub fn strip_trailing_sql_terminator(sql: &str) -> &str {
+    let trimmed = sql.trim_end();
+    if trimmed.ends_with(';') {
+        trimmed.trim_end_matches(';').trim_end()
+    } else {
+        trimmed
+    }
+}
 
 pub fn maybe_truncate_text(value: String, max_chars: usize) -> (String, bool) {
     if value.chars().count() <= max_chars {
@@ -172,5 +186,25 @@ fn empty_result_from_query_result(
         truncation_reasons: vec![],
         notice: None,
         execution_time: format!("{:?}", started.elapsed()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_trailing_sql_terminator;
+
+    #[test]
+    fn strips_trailing_semicolon_and_whitespace() {
+        assert_eq!(strip_trailing_sql_terminator("select 1;   \n"), "select 1");
+    }
+
+    #[test]
+    fn keeps_query_without_trailing_semicolon() {
+        assert_eq!(strip_trailing_sql_terminator("select ';'"), "select ';'");
+    }
+
+    #[test]
+    fn strips_multiple_trailing_semicolons() {
+        assert_eq!(strip_trailing_sql_terminator("select 1;;"), "select 1");
     }
 }
