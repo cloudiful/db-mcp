@@ -29,7 +29,6 @@ pub type ConnectionInfo = ConnectionHealth;
 #[serde(rename_all = "camelCase")]
 pub struct HealthSnapshot {
     pub status: String,
-    pub default_connection: String,
     pub connections: Vec<ConnectionHealth>,
 }
 

@@ -27,7 +27,7 @@ pub fn build_server_info(name: &str, version: &str) -> ServerInfo {
             .with_description("Safe database discovery and read-only query access"),
     )
     .with_instructions(
-        "Start with list_connections or db://connections, then inspect schemas and tables before running ad hoc SQL.".to_string(),
+        "Start with list_connections or db://connections, choose a connection name, and pass that connection to every database tool before running ad hoc SQL.".to_string(),
     )
 }
 

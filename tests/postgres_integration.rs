@@ -45,7 +45,6 @@ async fn postgres_manager_health_is_up() {
     let manager = Manager::new(&cfg).await.expect("manager init");
     let health = manager.health(None, true).await.expect("health");
 
-    assert_eq!(health.default_connection, "postgres");
     assert_eq!(health.connections.len(), 1);
     assert!(
         health.connections[0].available,

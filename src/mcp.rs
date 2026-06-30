@@ -40,36 +40,45 @@ impl DbMcpService {
                 "diagnose_connection",
                 "Run staged connection diagnostics for one or all configured databases.",
             ),
-            tool_schema::<ListInput>("list_schemas", "List visible schemas for a connection."),
-            tool_schema::<ListInput>("list_tables", "List tables and views in a schema."),
+            tool_schema::<ListInput>(
+                "list_schemas",
+                "List visible schemas for a named connection. Call list_connections first.",
+            ),
+            tool_schema::<ListInput>(
+                "list_tables",
+                "List tables and views in a schema for a named connection.",
+            ),
             tool_schema::<SearchColumnsInput>(
                 "search_columns",
-                "Search visible columns by name within a schema.",
+                "Search visible columns by name within a schema for a named connection.",
             ),
             tool_schema::<ListInput>(
                 "list_indexes",
-                "List visible indexes for a schema or table.",
+                "List visible indexes for a schema or table on a named connection.",
             ),
             tool_schema::<ListConstraintsInput>(
                 "list_constraints",
-                "List visible table constraints for a schema or table.",
+                "List visible table constraints for a schema or table on a named connection.",
             ),
             tool_schema::<TableInput>(
                 "get_table_comments",
-                "Get table and column comments for a table or view.",
+                "Get table and column comments for a table or view on a named connection.",
             ),
-            tool_schema::<TableInput>("describe_table", "Describe table or view columns."),
+            tool_schema::<TableInput>(
+                "describe_table",
+                "Describe table or view columns on a named connection.",
+            ),
             tool_schema::<TableInput>(
                 "get_table_ddl",
-                "Return a table or view DDL definition in a normalized read-only form.",
+                "Return a table or view DDL definition in a normalized read-only form for a named connection.",
             ),
             tool_schema::<ExecuteQueryInput>(
                 "execute_query",
-                "Run a query. Results are truncated to protect MCP context.",
+                "Run a query on a named connection. Results are truncated to protect MCP context.",
             ),
             tool_schema::<ExplainQueryInput>(
                 "explain_query",
-                "Explain a query and return the execution plan.",
+                "Explain a query on a named connection and return the execution plan.",
             ),
         ]
     }
@@ -89,7 +98,8 @@ impl DbMcpService {
                         .with_required(true),
                     PromptArgument::new("schema").with_description("schema name if known"),
                     PromptArgument::new("connection")
-                        .with_description("connection name if multiple databases are configured"),
+                        .with_description("connection name from list_connections")
+                        .with_required(true),
                 ],
             ),
         ]
@@ -100,7 +110,7 @@ impl DbMcpService {
             "db://connections",
             "connections",
             "Database Connections",
-            "Configured database connections and the default connection for this server.",
+            "Configured database connections. Use one of these names as the connection argument in other tools.",
             "application/json",
         )]
     }
@@ -164,7 +174,7 @@ impl ServerHandler for DbMcpService {
                 "Suggested step-by-step workflow for exploring an unfamiliar database safely.",
                 vec![PromptMessage::new_text(
                     PromptMessageRole::User,
-                    "1. Start with list_connections or db://connections.\n2. Inspect schemas, then tables.\n3. Use describe_table, list_constraints, and list_indexes before execute_query.\n4. Prefer small, scoped queries first.",
+                    "1. Start with list_connections or db://connections.\n2. Pick a connection name and pass it to every database tool.\n3. Inspect schemas, then tables.\n4. Use describe_table, list_constraints, and list_indexes before execute_query.\n5. Prefer small, scoped queries first.",
                 )],
             )),
             "inspect_table" => {

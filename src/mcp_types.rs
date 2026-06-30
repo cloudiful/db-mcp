@@ -70,7 +70,6 @@ pub struct ExplainQueryInput {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListConnectionsOutput {
-    pub default_connection: String,
     pub connections: Vec<database::ConnectionHealth>,
 }
 

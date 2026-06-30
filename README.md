@@ -27,6 +27,8 @@ cargo run
 
 ## Notes
 
+- There is no implicit default database selection; every MCP tool that touches a database must receive an explicit `connection` name
+- Call `list_connections` or read `db://connections` first, then copy one of the returned names into later tool calls
 - PostgreSQL and Oracle connections default to `readOnly: true` and run queries inside read-only transactions
 - Set `readOnly: false` per connection to allow write-capable transactions
 - Single-statement queries may end with a trailing `;`; the server strips that terminator before execution, but multi-statement SQL scripts are still not supported

@@ -23,7 +23,6 @@ struct Slot {
 #[derive(Clone)]
 pub struct Manager {
     slots: Arc<BTreeMap<String, Slot>>,
-    default_name: String,
     limits: Limits,
 }
 
@@ -82,7 +81,6 @@ impl Manager {
         }
 
         let manager = Self {
-            default_name: cfg.connections[0].name.clone(),
             slots: Arc::new(slots),
             limits,
         };
@@ -102,7 +100,11 @@ impl Manager {
     }
 
     pub fn connection(&self, name: Option<&str>) -> Result<Arc<dyn DatabaseConnection>> {
-        let name = name.unwrap_or(&self.default_name);
+        let Some(name) = name.map(str::trim).filter(|name| !name.is_empty()) else {
+            bail!(
+                "connection is required; call list_connections first and pass one of the returned names"
+            );
+        };
         self.slots
             .get(name)
             .map(|slot| slot.conn.clone())
@@ -132,7 +134,6 @@ impl Manager {
         connections.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(HealthSnapshot {
             status: overall_status(&connections),
-            default_connection: self.default_name.clone(),
             connections,
         })
     }
@@ -322,5 +323,83 @@ async fn open_connection(
             limits.clone(),
         )?)),
         other => bail!("unsupported driver {other}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::BTreeMap, sync::Arc};
+
+    use super::{Manager, Slot};
+    use crate::database::unavailable::FailedConnection;
+    use crate::database::{ConnectionHealth, Limits};
+
+    fn test_manager() -> Manager {
+        let conn = Arc::new(FailedConnection::new(
+            "postgres".to_string(),
+            "postgres".to_string(),
+            "public".to_string(),
+            "offline".to_string(),
+        ));
+        let mut slots = BTreeMap::new();
+        slots.insert(
+            "postgres".to_string(),
+            Slot {
+                health: Arc::new(std::sync::Mutex::new(ConnectionHealth {
+                    name: "postgres".to_string(),
+                    driver: "postgres".to_string(),
+                    default_schema: "public".to_string(),
+                    status: "down".to_string(),
+                    available: false,
+                    last_checked_at: None,
+                    last_successful_at: None,
+                    last_error: Some("offline".to_string()),
+                    failure_phase: Some("config".to_string()),
+                    last_error_chain: vec!["offline".to_string()],
+                    probe_checks: vec![],
+                })),
+                conn,
+            },
+        );
+
+        Manager {
+            slots: Arc::new(slots),
+            limits: Limits {
+                default_max_rows: 5,
+                hard_max_rows: 20,
+                max_columns: 40,
+                max_cell_chars: 512,
+                max_total_chars: 1000,
+                explain_max_lines: 12,
+                explain_max_total_chars: 4000,
+                query_timeout: std::time::Duration::from_secs(15),
+            },
+        }
+    }
+
+    #[test]
+    fn connection_requires_explicit_name() {
+        let manager = test_manager();
+        let result = manager.connection(None);
+        assert!(result.is_err(), "missing name should fail");
+        let err = result.err().expect("error should exist");
+        let message = err.to_string();
+        assert!(
+            message.contains("connection is required") && message.contains("list_connections"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn connection_rejects_blank_name() {
+        let manager = test_manager();
+        let result = manager.connection(Some("   "));
+        assert!(result.is_err(), "blank name should fail");
+        let err = result.err().expect("error should exist");
+        let message = err.to_string();
+        assert!(
+            message.contains("connection is required") && message.contains("list_connections"),
+            "unexpected error: {err:#}"
+        );
     }
 }

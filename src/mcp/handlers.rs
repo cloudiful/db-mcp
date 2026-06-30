@@ -13,14 +13,12 @@ impl DbMcpService {
         let refresh = input.refresh.unwrap_or(true);
         let health = self.state.manager.health(None, refresh).await?;
         let output = ListConnectionsOutput {
-            default_connection: health.default_connection.clone(),
             connections: health.connections,
         };
         database::call_tool_json(
             format!(
-                "Configured {} connection(s). Default is {}.",
-                output.connections.len(),
-                output.default_connection
+                "Configured {} connection(s). Pass one of these names as connection in other tools.",
+                output.connections.len()
             ),
             &output,
         )
