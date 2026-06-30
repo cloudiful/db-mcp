@@ -22,7 +22,7 @@ jobs:
 
       - name: Resolve image tags
         id: tags
-        uses: https://forgejo.cloud1ful.com/actions/workflows/actions/resolve-image-tags@v0.1.4
+        uses: https://forgejo.cloud1ful.com/actions/workflows/actions/resolve-image-tags@v0.1.7
 
   build-arm64:
     runs-on: ubuntu-latest-arm
@@ -33,7 +33,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Build and push arm64 image
-        uses: https://forgejo.cloud1ful.com/actions/workflows/actions/publish-rust-docker-image@v0.1.4
+        uses: https://forgejo.cloud1ful.com/actions/workflows/actions/publish-rust-docker-image@v0.1.7
         with:
           dockerfile: ./Dockerfile
           target: app-runtime
@@ -54,7 +54,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Build and push amd64 image
-        uses: https://forgejo.cloud1ful.com/actions/workflows/actions/publish-rust-docker-image@v0.1.4
+        uses: https://forgejo.cloud1ful.com/actions/workflows/actions/publish-rust-docker-image@v0.1.7
         with:
           dockerfile: ./Dockerfile
           target: app-runtime
@@ -74,7 +74,7 @@ jobs:
       - build-amd64
     steps:
       - name: Publish multi-arch manifest
-        uses: https://forgejo.cloud1ful.com/actions/workflows/actions/publish-docker-manifest@v0.1.4
+        uses: https://forgejo.cloud1ful.com/actions/workflows/actions/publish-docker-manifest@v0.1.7
         with:
           manifest_tag: ${{ needs.resolve-tags.outputs.manifest_tag }}
           amd64_tag: ${{ needs.resolve-tags.outputs.amd64_tag }}
