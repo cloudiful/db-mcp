@@ -25,6 +25,11 @@ cargo run
 - `/healthz`
 - `/readyz`
 
+## Releases
+
+- Version tags publish `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu` binary archives to GitHub Releases
+- The container image is published to `ghcr.io/<owner>/<repository>` with `linux/amd64` and `linux/arm64` support
+
 ## Notes
 
 - There is no implicit default database selection; every MCP tool that touches a database must receive an explicit `connection` name
