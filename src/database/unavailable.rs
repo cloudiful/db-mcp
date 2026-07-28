@@ -58,6 +58,10 @@ impl DatabaseConnection for FailedConnection {
         "<unavailable>".to_string()
     }
 
+    fn supports_read_only_batch(&self) -> bool {
+        false
+    }
+
     async fn ping(&self) -> Result<()> {
         Err(self.unavailable_error("ping"))
     }

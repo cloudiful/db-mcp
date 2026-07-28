@@ -199,6 +199,7 @@ impl Limits {
 pub trait DatabaseConnection: Send + Sync {
     fn info(&self) -> ConnectionInfo;
     fn target_summary(&self) -> String;
+    fn supports_read_only_batch(&self) -> bool;
     async fn ping(&self) -> Result<()>;
     async fn diagnose(&self, deep: bool) -> ConnectionDiagnostic;
     async fn list_schemas(&self, filter: Option<&str>, limit: usize) -> Result<Vec<SchemaInfo>>;

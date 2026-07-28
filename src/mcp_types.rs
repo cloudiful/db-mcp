@@ -60,6 +60,23 @@ pub struct ExecuteQueryInput {
     pub max_rows: Option<usize>,
 }
 
+pub const MAX_BATCH_QUERIES: usize = 8;
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecuteQueryItem {
+    pub sql: String,
+    pub max_rows: Option<usize>,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecuteQueriesInput {
+    pub connection: Option<String>,
+    #[schemars(length(min = 1, max = 8))]
+    pub queries: Vec<ExecuteQueryItem>,
+}
+
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ExplainQueryInput {
@@ -142,6 +159,30 @@ pub struct GetTableDDLOutput {
 pub struct ExecuteQueryOutput {
     pub connection: String,
     pub result: database::QueryResult,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecuteQueriesResult {
+    pub index: usize,
+    pub result: database::QueryResult,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecuteQueriesError {
+    pub index: usize,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecuteQueriesOutput {
+    pub connection: String,
+    pub status: String,
+    pub statement_count: usize,
+    pub results: Vec<ExecuteQueriesResult>,
+    pub error: Option<ExecuteQueriesError>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]

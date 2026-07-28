@@ -33,6 +33,7 @@ async fn oracle_can_probe_and_query_when_configured() {
     };
     let manager = Manager::new(&cfg).await.expect("manager init");
     let conn = manager.connection(Some("oracle")).expect("connection");
+    assert!(conn.supports_read_only_batch());
 
     let health = manager.health(Some("oracle"), true).await.expect("health");
     assert!(
@@ -47,7 +48,7 @@ async fn oracle_can_probe_and_query_when_configured() {
     assert!(!schemas.is_empty());
 
     let result = conn
-        .execute_query("select 1 as value from dual", 10, manager.limits())
+        .execute_query("select\n1 as value from dual;", 10, manager.limits())
         .await
         .expect("execute_query should work");
     assert_eq!(result.row_count, 1);

@@ -136,6 +136,10 @@ impl DatabaseConnection for OracleConnection {
         self.spec.target.clone()
     }
 
+    fn supports_read_only_batch(&self) -> bool {
+        self.config.read_only
+    }
+
     async fn ping(&self) -> Result<()> {
         self.query("select 1 from dual").await?;
         self.refresh_schema().await?;

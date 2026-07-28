@@ -88,6 +88,10 @@ impl DatabaseConnection for PostgresConnection {
         redact_postgres_dsn(&self.config.dsn)
     }
 
+    fn supports_read_only_batch(&self) -> bool {
+        self.config.read_only
+    }
+
     async fn ping(&self) -> Result<()> {
         tokio::time::timeout(
             self.limits.query_timeout,

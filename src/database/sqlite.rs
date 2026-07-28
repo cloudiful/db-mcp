@@ -10,6 +10,7 @@ use super::*;
 pub struct SQLiteConnection {
     name: String,
     dsn: String,
+    read_only: bool,
     limits: Limits,
     pool: AnyPool,
     default_schema: Arc<RwLock<String>>,
@@ -21,6 +22,7 @@ impl SQLiteConnection {
         Ok(Self {
             name,
             dsn: config.dsn,
+            read_only: config.read_only,
             limits,
             pool,
             default_schema: Arc::new(RwLock::new("main".to_string())),
@@ -59,6 +61,10 @@ impl DatabaseConnection for SQLiteConnection {
 
     fn target_summary(&self) -> String {
         self.dsn.clone()
+    }
+
+    fn supports_read_only_batch(&self) -> bool {
+        self.read_only && sqlite_dsn_is_read_only(&self.dsn)
     }
 
     async fn ping(&self) -> Result<()> {

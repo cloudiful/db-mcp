@@ -36,7 +36,9 @@ cargo run
 - Call `list_connections` or read `db://connections` first, then copy one of the returned names into later tool calls
 - PostgreSQL and Oracle connections default to `readOnly: true` and run queries inside read-only transactions
 - Set `readOnly: false` per connection to allow write-capable transactions
-- Single-statement queries may end with a trailing `;`; the server strips that terminator before execution, but multi-statement SQL scripts are still not supported
-- SQLite does not support transaction-level read-only enforcement here; use a read-only DSN such as `mode=ro` if needed
+- `execute_query` accepts one single-statement query, including multiline SQL and a trailing `;`; multi-statement SQL scripts are not supported
+- Use `execute_queries` for 1 to 8 sequential read-only queries; each query keeps its own result and the batch stops at the first failure
+- Batch queries require PostgreSQL/Oracle `readOnly: true`; SQLite additionally requires a read-only DSN such as `mode=ro`
+- SQLite does not support transaction-level read-only enforcement here, so single-query writes remain controlled by the DSN and database permissions
 - PostgreSQL and SQLite use `sqlx`
 - Oracle is kept behind the same interface, but not enabled in this build

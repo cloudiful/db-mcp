@@ -127,6 +127,32 @@ async fn postgres_execute_query_accepts_trailing_semicolon() {
 }
 
 #[tokio::test]
+async fn postgres_read_only_connection_supports_sequential_batch_queries() {
+    let cfg = test_config();
+    let manager = Manager::new(&cfg).await.expect("manager init");
+    let conn = manager.connection(Some("postgres")).expect("connection");
+
+    assert!(conn.supports_read_only_batch());
+    let first = conn
+        .execute_query("select\n1 as value;", 10, manager.limits())
+        .await
+        .expect("first batch statement");
+    let second = conn
+        .execute_query("select 2 as value;", 10, manager.limits())
+        .await
+        .expect("second batch statement");
+
+    assert_eq!(
+        first.rows[0].get("value").and_then(|value| value.as_i64()),
+        Some(1)
+    );
+    assert_eq!(
+        second.rows[0].get("value").and_then(|value| value.as_i64()),
+        Some(2)
+    );
+}
+
+#[tokio::test]
 async fn postgres_explain_query_accepts_trailing_semicolon() {
     let cfg = test_config();
     let manager = Manager::new(&cfg).await.expect("manager init");

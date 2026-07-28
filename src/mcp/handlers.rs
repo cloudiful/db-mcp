@@ -4,6 +4,7 @@ use rmcp::model::CallToolResult;
 use crate::{database, mcp_types::*};
 
 use super::DbMcpService;
+use super::batch::execute_query_batch;
 
 impl DbMcpService {
     pub(super) async fn list_connections(
@@ -197,6 +198,21 @@ impl DbMcpService {
                 connection: conn.info().name,
                 result,
             },
+        )
+    }
+
+    pub(super) async fn execute_queries(
+        &self,
+        input: ExecuteQueriesInput,
+    ) -> Result<CallToolResult> {
+        let conn = self.state.manager.connection(input.connection.as_deref())?;
+        let output = execute_query_batch(&*conn, input, self.state.manager.limits()).await?;
+        database::call_tool_json(
+            format!(
+                "Processed {} batch query statement(s) on {} with status {}.",
+                output.statement_count, output.connection, output.status
+            ),
+            &output,
         )
     }
 

@@ -11,6 +11,7 @@ pub mod postgres;
 mod postgres_query;
 mod rows;
 pub mod sqlite;
+mod sqlite_dsn;
 mod types;
 mod unavailable;
 
@@ -18,6 +19,7 @@ pub use diagnostics::*;
 pub use manager::*;
 pub use mcp_support::*;
 pub use rows::*;
+pub(crate) use sqlite_dsn::sqlite_dsn_is_read_only;
 pub use types::*;
 
 pub fn chrono_like_now() -> String {

@@ -12,6 +12,7 @@ use std::sync::Arc;
 use crate::database;
 use crate::mcp_types::*;
 
+mod batch;
 mod handlers;
 
 #[derive(Clone)]
@@ -74,7 +75,11 @@ impl DbMcpService {
             ),
             tool_schema::<ExecuteQueryInput>(
                 "execute_query",
-                "Run a query on a named connection. Results are truncated to protect MCP context.",
+                "Run one single-statement query on a named connection. A trailing semicolon is allowed; SQL scripts are not supported. Results are truncated to protect MCP context.",
+            ),
+            tool_schema::<ExecuteQueriesInput>(
+                "execute_queries",
+                "Run 1 to 8 read-only single-statement queries sequentially on a named connection. Each query may span multiple lines and end with a semicolon; SQL scripts are not supported. Results are returned separately and execution stops at the first failure.",
             ),
             tool_schema::<ExplainQueryInput>(
                 "explain_query",
@@ -372,6 +377,13 @@ impl ServerHandler for DbMcpService {
                 }
                 "execute_query" => {
                     self.execute_query(
+                        Self::parse_tool_input(request.arguments)
+                            .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?,
+                    )
+                    .await
+                }
+                "execute_queries" => {
+                    self.execute_queries(
                         Self::parse_tool_input(request.arguments)
                             .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?,
                     )
