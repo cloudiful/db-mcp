@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select pg_get_viewdef(format('%I.%I', $1::text, $2::text)::regclass, true) as view_definition\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "view_definition",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "2ee1213f65d8388a930f8a764cf69feffc0f024fb1fb07f9d18edc2dfb81576e"
+}

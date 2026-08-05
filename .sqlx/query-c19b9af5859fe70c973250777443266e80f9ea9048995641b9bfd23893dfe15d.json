@@ -1,0 +1,86 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select column_name::text as column_name,\n       data_type::text as data_type,\n       is_nullable::text as is_nullable,\n       ordinal_position,\n       character_maximum_length, numeric_precision, numeric_scale\nfrom information_schema.columns\nwhere table_schema = $1 and table_name = $2\norder by ordinal_position\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "column_name",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "data_type",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "is_nullable",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "ordinal_position",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "information_schema.columns",
+            "name": "ordinal_position"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "character_maximum_length",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "information_schema.columns",
+            "name": "character_maximum_length"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "numeric_precision",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "information_schema.columns",
+            "name": "numeric_precision"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "numeric_scale",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "information_schema.columns",
+            "name": "numeric_scale"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Name",
+        "Name"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "c19b9af5859fe70c973250777443266e80f9ea9048995641b9bfd23893dfe15d"
+}

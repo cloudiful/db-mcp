@@ -1,12 +1,15 @@
 use anyhow::{Context, Result};
 use axum::{Json, Router, middleware, routing::get};
-use cloudiful_server::mcp as cloudiful_mcp;
-use cloudiful_server::{ServerConfig as BaseServerConfig, axum::Server as HttpServer};
 use std::env;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
+use tower_http::cors::CorsLayer;
 use tracing::{info, warn};
 
+use crate::runtime::mcp_transport as transport;
 use crate::{config, database, mcp};
+
+pub mod mcp_transport;
 
 pub fn init_tracing() {
     let default_filter = if debug_requested() { "debug" } else { "info" };
@@ -32,56 +35,54 @@ pub async fn run(cli: config::Cli) -> Result<()> {
 }
 
 async fn run_stdio(state: Arc<mcp::AppState>) -> Result<()> {
-    let service = mcp::DbMcpService::new(state);
-    let running = cloudiful_server::mcp::serve_stdio(service).await?;
-    let _ = running.waiting().await;
-    Ok(())
+    transport::serve_stdio(mcp::DbMcpService::new(state)).await
 }
 
 async fn run_http(state: Arc<mcp::AppState>) -> Result<()> {
-    let cfg = http_config(state.clone())?;
+    let ct = CancellationToken::new();
+    let addr = state.cfg.server.http_addr.clone();
     let app = build_router(state);
-    HttpServer::new(cfg, app).start().await?;
-    Ok(())
-}
-
-async fn run_both(state: Arc<mcp::AppState>) -> Result<()> {
-    let cfg = http_config(state.clone())?;
-    let app = build_router(state.clone());
-    let http = HttpServer::new(cfg, app);
-    let http_task = tokio::spawn(async move { http.start().await });
-    let stdio_task = tokio::spawn(async move { run_stdio(state).await });
-
+    let mut http_task = tokio::spawn(transport::serve_http(app, addr, ct.child_token()));
     tokio::select! {
-        res = http_task => {
-            res.context("join http task")??;
-        }
-        res = stdio_task => {
-            res.context("join stdio task")??;
-        }
+        res = &mut http_task => res.context("join http task")??,
         _ = tokio::signal::ctrl_c() => {
             warn!("shutdown requested");
+            ct.cancel();
+            let _ = http_task.await;
         }
     }
     Ok(())
 }
 
-fn http_config(state: Arc<mcp::AppState>) -> Result<cloudiful_server::ValidatedServerConfig> {
-    let http_addr = state.cfg.server.http_addr.clone();
-    Ok(BaseServerConfig::new()
-        .with_listen_addr(http_addr.clone())
-        .build()
-        .with_context(|| format!("invalid http listen address addr={http_addr}"))?)
+async fn run_both(state: Arc<mcp::AppState>) -> Result<()> {
+    let ct = CancellationToken::new();
+    let addr = state.cfg.server.http_addr.clone();
+    let app = build_router(state.clone());
+    let mut http_task = tokio::spawn(transport::serve_http(app, addr, ct.child_token()));
+    let mut stdio_task = tokio::spawn(transport::serve_stdio(mcp::DbMcpService::new(state)));
+
+    tokio::select! {
+        res = &mut http_task => res.context("join http task")??,
+        res = &mut stdio_task => {
+            ct.cancel();
+            let _ = http_task.await;
+            res.context("join stdio task")??;
+        }
+        _ = tokio::signal::ctrl_c() => {
+            warn!("shutdown requested");
+            ct.cancel();
+            let _ = http_task.await;
+            let _ = stdio_task.await;
+        }
+    }
+    Ok(())
 }
 
 fn build_router(state: Arc<mcp::AppState>) -> Router {
-    let mcp_config =
-        cloudiful_mcp::ServerConfig::new().with_service_path(state.cfg.server.http_path.clone());
-    let mcp_state = state.clone();
-    let mcp_router = cloudiful_mcp::router(mcp_config, move || {
-        mcp::DbMcpService::new(mcp_state.clone())
-    })
-    .expect("validated MCP HTTP service path");
+    let mcp_router = transport::mcp_router(
+        mcp_service_factory(state.clone()),
+        &state.cfg.server.http_path,
+    );
     let mcp_router = if state.cfg.server.http_auth.mode == crate::config::HttpAuthMode::Bearer {
         mcp_router.route_layer(middleware::from_fn_with_state(
             state.clone(),
@@ -101,6 +102,13 @@ fn build_router(state: Arc<mcp::AppState>) -> Router {
             }),
         )
         .merge(mcp_router)
+        .layer(CorsLayer::permissive())
+}
+
+fn mcp_service_factory(
+    state: Arc<mcp::AppState>,
+) -> impl Fn() -> Result<mcp::DbMcpService, std::io::Error> + Send + Sync + 'static {
+    move || Ok(mcp::DbMcpService::new(state.clone()))
 }
 
 async fn healthz() -> &'static str {
@@ -167,23 +175,21 @@ fn log_startup(cfg: &config::Config, manager: &database::Manager) {
             "http MCP listening host={} port={} path={} healthz=/healthz readyz=/readyz",
             host, port, cfg.server.http_path
         );
+        if !matches!(host.as_str(), "127.0.0.1" | "::1" | "localhost")
+            && cfg.server.http_auth.mode == config::HttpAuthMode::None
+        {
+            warn!(
+                "http MCP exposed on {host}:{port} without authentication; any client that can reach it (including arbitrary web pages via permissive CORS) can invoke database tools"
+            );
+        }
     }
 }
 
 fn split_listen_addr(addr: &str) -> (String, String) {
-    if addr.is_empty() {
-        return ("0.0.0.0".to_string(), "8080".to_string());
-    }
+    let addr = config::normalize_listen_addr(addr);
     match addr.rsplit_once(':') {
-        Some((host, port)) => (
-            if host.is_empty() {
-                "0.0.0.0".to_string()
-            } else {
-                host.to_string()
-            },
-            port.to_string(),
-        ),
-        None => (addr.to_string(), String::new()),
+        Some((host, port)) => (host.to_string(), port.to_string()),
+        None => (addr, String::new()),
     }
 }
 

@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use sqlx::{AnyPool, Row};
+use sqlx::postgres::PgPool;
 use std::sync::{Arc, RwLock};
 
 use crate::config;
@@ -11,13 +11,13 @@ pub struct PostgresConnection {
     name: String,
     config: config::PostgresConfig,
     limits: Limits,
-    pool: AnyPool,
+    pool: PgPool,
     default_schema: Arc<RwLock<String>>,
 }
 
 impl PostgresConnection {
     pub fn new(name: String, config: config::PostgresConfig, limits: Limits) -> Result<Self> {
-        let pool = AnyPool::connect_lazy(&config.dsn)?;
+        let pool = PgPool::connect_lazy(&config.dsn)?;
         let default_schema = if config.schema.trim().is_empty() {
             "public".to_string()
         } else {
@@ -48,8 +48,8 @@ impl PostgresConnection {
                 .expect("default_schema poisoned") = self.config.schema.trim().to_string();
             return Ok(());
         }
-        let schema: Option<String> = sqlx::query_scalar("select current_schema()::text")
-            .fetch_optional(&self.pool)
+        let schema: Option<String> = sqlx::query_file_scalar!("sql/postgres/current_schema.sql")
+            .fetch_one(&self.pool)
             .await
             .context("current_schema")?;
         if let Some(schema) = schema {
@@ -95,7 +95,7 @@ impl DatabaseConnection for PostgresConnection {
     async fn ping(&self) -> Result<()> {
         tokio::time::timeout(
             self.limits.query_timeout,
-            sqlx::query_scalar::<_, i64>("select 1").fetch_one(&self.pool),
+            sqlx::query_file!("sql/postgres/ping.sql").fetch_one(&self.pool),
         )
         .await
         .with_context(|| {
@@ -162,7 +162,7 @@ impl DatabaseConnection for PostgresConnection {
             timed_probe("pingQuery", target.clone(), || async {
                 tokio::time::timeout(
                     self.limits.query_timeout,
-                    sqlx::query_scalar::<_, i64>("select 1").fetch_one(&self.pool),
+                    sqlx::query_file!("sql/postgres/ping.sql").fetch_one(&self.pool),
                 )
                 .await
                 .context("postgres ping query timeout")?
@@ -189,12 +189,10 @@ impl DatabaseConnection for PostgresConnection {
 
         checks.push(
             timed_probe("metadataSmokeTest", target, || async {
-                sqlx::query_scalar::<_, i64>(
-                    "select count(*)::bigint from information_schema.schemata",
-                )
-                .fetch_one(&self.pool)
-                .await
-                .context("postgres metadata smoke test")?;
+                sqlx::query_file!("sql/postgres/metadata_smoke.sql")
+                    .fetch_one(&self.pool)
+                    .await
+                    .context("postgres metadata smoke test")?;
                 Ok(())
             })
             .await,
@@ -205,25 +203,17 @@ impl DatabaseConnection for PostgresConnection {
     async fn list_schemas(&self, filter: Option<&str>, limit: usize) -> Result<Vec<SchemaInfo>> {
         let limit = self.limits.normalize_list_limit(limit);
         let filter = filter.unwrap_or("");
-        let rows = sqlx::query(
-            r#"
-            select schema_name::text as schema_name
-            from information_schema.schemata
-            where schema_name not like 'pg_%'
-              and schema_name <> 'information_schema'
-              and lower(schema_name) like lower($1)
-            order by schema_name
-            limit $2
-            "#,
+        let rows = sqlx::query_file!(
+            "sql/postgres/list_schemas.sql",
+            format!("%{filter}%"),
+            limit as i64
         )
-        .bind(format!("%{filter}%"))
-        .bind(limit as i64)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows
             .into_iter()
             .map(|row| SchemaInfo {
-                name: row.try_get::<String, _>("schema_name").unwrap_or_default(),
+                name: row.schema_name.unwrap_or_default(),
             })
             .collect())
     }
@@ -237,32 +227,20 @@ impl DatabaseConnection for PostgresConnection {
         let limit = self.limits.normalize_list_limit(limit);
         let schema = schema.map(str::to_string).unwrap_or(self.schema().await?);
         let filter = filter.unwrap_or("");
-        let rows = sqlx::query(
-            r#"
-            select table_schema::text as table_schema,
-                   table_name::text as table_name,
-                   table_type::text as table_type
-            from information_schema.tables
-            where table_schema = $1
-              and lower(table_name) like lower($2)
-              and table_type in ('BASE TABLE', 'VIEW')
-            order by table_name
-            limit $3
-            "#,
+        let rows = sqlx::query_file!(
+            "sql/postgres/list_tables.sql",
+            &schema,
+            format!("%{filter}%"),
+            limit as i64
         )
-        .bind(&schema)
-        .bind(format!("%{filter}%"))
-        .bind(limit as i64)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows
             .into_iter()
             .map(|row| TableInfo {
-                schema: row
-                    .try_get("table_schema")
-                    .unwrap_or_else(|_| schema.clone()),
-                name: row.try_get("table_name").unwrap_or_default(),
-                table_type: row.try_get("table_type").unwrap_or_default(),
+                schema: row.table_schema.unwrap_or_default(),
+                name: row.table_name.unwrap_or_default(),
+                table_type: row.table_type.unwrap_or_default(),
             })
             .collect())
     }
@@ -276,37 +254,22 @@ impl DatabaseConnection for PostgresConnection {
         let limit = self.limits.normalize_list_limit(limit);
         let schema = schema.map(str::to_string).unwrap_or(self.schema().await?);
         let filter = filter.unwrap_or("");
-        let rows = sqlx::query(
-            r#"
-            select table_schema::text as table_schema,
-                   table_name::text as table_name,
-                   column_name::text as column_name,
-                   data_type::text as data_type,
-                   ordinal_position
-            from information_schema.columns
-            where table_schema = $1
-              and lower(column_name) like lower($2)
-            order by table_name, ordinal_position
-            limit $3
-            "#,
+        let rows = sqlx::query_file!(
+            "sql/postgres/search_columns.sql",
+            &schema,
+            format!("%{filter}%"),
+            limit as i64
         )
-        .bind(&schema)
-        .bind(format!("%{filter}%"))
-        .bind(limit as i64)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows
             .into_iter()
             .map(|row| ColumnMatchInfo {
-                schema: row
-                    .try_get("table_schema")
-                    .unwrap_or_else(|_| schema.clone()),
-                table: row.try_get("table_name").unwrap_or_default(),
-                column: row.try_get("column_name").unwrap_or_default(),
-                data_type: row.try_get("data_type").unwrap_or_default(),
-                position: row
-                    .try_get::<i64, _>("ordinal_position")
-                    .unwrap_or_default(),
+                schema: row.table_schema.unwrap_or_default(),
+                table: row.table_name.unwrap_or_default(),
+                column: row.column_name.unwrap_or_default(),
+                data_type: row.data_type.unwrap_or_default(),
+                position: row.ordinal_position.map(|p| p as i64).unwrap_or_default(),
             })
             .collect())
     }
@@ -320,51 +283,28 @@ impl DatabaseConnection for PostgresConnection {
         let schema = schema.map(str::to_string).unwrap_or(self.schema().await?);
         let table = table.context("table is required")?;
         let limit = self.limits.normalize_list_limit(limit);
-        let rows = sqlx::query(
-            r#"
-            select
-                c.conname::text as name,
-                n.nspname::text as schema,
-                rel.relname::text as table_name,
-                case c.contype
-                    when 'p' then 'PRIMARY KEY'
-                    when 'u' then 'UNIQUE'
-                    when 'f' then 'FOREIGN KEY'
-                    when 'c' then 'CHECK'
-                    else c.contype::text
-                end as constraint_type,
-                pg_get_constraintdef(c.oid, true)::text as definition,
-                case when c.confrelid <> 0 then nconf.nspname::text end as referenced_schema,
-                case when c.confrelid <> 0 then relconf.relname::text end as referenced_table
-            from pg_constraint c
-            join pg_class rel on rel.oid = c.conrelid
-            join pg_namespace n on n.oid = rel.relnamespace
-            left join pg_class relconf on relconf.oid = c.confrelid
-            left join pg_namespace nconf on nconf.oid = relconf.relnamespace
-            where n.nspname = $1 and rel.relname = $2
-            order by c.conname
-            limit $3
-            "#,
+        let rows = sqlx::query_file!(
+            "sql/postgres/list_constraints.sql",
+            &schema,
+            table,
+            limit as i64
         )
-        .bind(&schema)
-        .bind(table)
-        .bind(limit as i64)
         .fetch_all(&self.pool)
         .await?;
 
         Ok(rows
             .into_iter()
             .map(|row| ConstraintInfo {
-                name: row.try_get("name").ok(),
-                schema: row.try_get("schema").unwrap_or_else(|_| schema.clone()),
-                table: row.try_get("table_name").unwrap_or_default(),
-                constraint_type: row.try_get("constraint_type").unwrap_or_default(),
+                name: row.name,
+                schema: row.schema.unwrap_or_default(),
+                table: row.table_name.unwrap_or_default(),
+                constraint_type: row.constraint_type.unwrap_or_default(),
                 columns: vec![],
-                referenced_schema: row.try_get("referenced_schema").ok(),
-                referenced_table: row.try_get("referenced_table").ok(),
+                referenced_schema: row.referenced_schema,
+                referenced_table: row.referenced_table,
                 referenced_columns: vec![],
                 check_expression: None,
-                definition: row.try_get("definition").ok(),
+                definition: row.definition,
             })
             .collect())
     }
@@ -378,27 +318,18 @@ impl DatabaseConnection for PostgresConnection {
         let schema = schema.map(str::to_string).unwrap_or(self.schema().await?);
         let table = table.context("table is required")?;
         let limit = self.limits.normalize_list_limit(limit);
-        let rows = sqlx::query(
-            r#"
-            select schemaname::text as schemaname,
-                   tablename::text as tablename,
-                   indexname::text as indexname,
-                   indexdef::text as indexdef
-            from pg_indexes
-            where schemaname = $1 and tablename = $2
-            order by indexname
-            limit $3
-            "#,
+        let rows = sqlx::query_file!(
+            "sql/postgres/list_indexes.sql",
+            &schema,
+            table,
+            limit as i64
         )
-        .bind(&schema)
-        .bind(table)
-        .bind(limit as i64)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows
             .into_iter()
             .map(|row| {
-                let definition: String = row.try_get("indexdef").unwrap_or_default();
+                let definition = row.indexdef.unwrap_or_default();
                 let columns = definition
                     .split('(')
                     .nth(1)
@@ -406,9 +337,9 @@ impl DatabaseConnection for PostgresConnection {
                     .map(|s| s.split(',').map(|v| v.trim().to_string()).collect())
                     .unwrap_or_else(Vec::new);
                 IndexInfo {
-                    schema: row.try_get("schemaname").unwrap_or_else(|_| schema.clone()),
-                    table: row.try_get("tablename").unwrap_or_default(),
-                    name: row.try_get("indexname").unwrap_or_default(),
+                    schema: row.schemaname.unwrap_or_default(),
+                    table: row.tablename.unwrap_or_default(),
+                    name: row.indexname.unwrap_or_default(),
                     index_type: Some("btree".to_string()),
                     unique: definition.to_uppercase().contains("UNIQUE INDEX"),
                     primary: definition.to_uppercase().contains("PRIMARY KEY"),
@@ -426,32 +357,15 @@ impl DatabaseConnection for PostgresConnection {
         table: &str,
     ) -> Result<TableCommentInfo> {
         let schema = schema.map(str::to_string).unwrap_or(self.schema().await?);
-        let table_comment: Option<String> = sqlx::query_scalar(
-            r#"
-            select obj_description((quote_ident($1) || '.' || quote_ident($2))::regclass::oid, 'pg_class')
-            "#,
-        )
-        .bind(&schema)
-        .bind(table)
-        .fetch_optional(&self.pool)
-        .await
-        .ok()
-        .flatten();
-        let rows = sqlx::query(
-            r#"
-            select a.attname::text as name, d.description::text as comment
-            from pg_attribute a
-            join pg_class c on c.oid = a.attrelid
-            join pg_namespace n on n.oid = c.relnamespace
-            left join pg_description d on d.objoid = a.attrelid and d.objsubid = a.attnum
-            where n.nspname = $1 and c.relname = $2 and a.attnum > 0 and not a.attisdropped
-            order by a.attnum
-            "#,
-        )
-        .bind(&schema)
-        .bind(table)
-        .fetch_all(&self.pool)
-        .await?;
+        let table_comment: Option<String> =
+            sqlx::query_file_scalar!("sql/postgres/get_table_comment.sql", &schema, table)
+                .fetch_one(&self.pool)
+                .await
+                .ok()
+                .flatten();
+        let rows = sqlx::query_file!("sql/postgres/list_column_comments.sql", &schema, table)
+            .fetch_all(&self.pool)
+            .await?;
         Ok(TableCommentInfo {
             schema,
             table: table.to_string(),
@@ -459,8 +373,8 @@ impl DatabaseConnection for PostgresConnection {
             columns: rows
                 .into_iter()
                 .map(|row| ColumnCommentInfo {
-                    name: row.try_get("name").unwrap_or_default(),
-                    comment: row.try_get("comment").ok(),
+                    name: row.name.unwrap_or_default(),
+                    comment: row.comment.filter(|c| !c.is_empty()),
                 })
                 .collect(),
             notice: None,
@@ -469,63 +383,37 @@ impl DatabaseConnection for PostgresConnection {
 
     async fn describe_table(&self, schema: Option<&str>, table: &str) -> Result<Vec<ColumnInfo>> {
         let schema = schema.map(str::to_string).unwrap_or(self.schema().await?);
-        let rows = sqlx::query(
-            r#"
-            select column_name::text as column_name,
-                   data_type::text as data_type,
-                   is_nullable::text as is_nullable,
-                   ordinal_position,
-                   character_maximum_length, numeric_precision, numeric_scale
-            from information_schema.columns
-            where table_schema = $1 and table_name = $2
-            order by ordinal_position
-            "#,
-        )
-        .bind(&schema)
-        .bind(table)
-        .fetch_all(&self.pool)
-        .await?;
+        let rows = sqlx::query_file!("sql/postgres/describe_table.sql", &schema, table)
+            .fetch_all(&self.pool)
+            .await?;
         Ok(rows
             .into_iter()
             .map(|row| ColumnInfo {
-                name: row.try_get("column_name").unwrap_or_default(),
-                data_type: row.try_get("data_type").unwrap_or_default(),
-                nullable: row
-                    .try_get::<String, _>("is_nullable")
-                    .map(|s| s == "YES")
-                    .unwrap_or(false),
-                position: row.try_get("ordinal_position").unwrap_or_default(),
-                length: row.try_get("character_maximum_length").ok(),
-                precision: row.try_get("numeric_precision").ok(),
-                scale: row.try_get("numeric_scale").ok(),
+                name: row.column_name.unwrap_or_default(),
+                data_type: row.data_type.unwrap_or_default(),
+                nullable: row.is_nullable.as_deref() == Some("YES"),
+                position: row.ordinal_position.map(|p| p as i64).unwrap_or_default(),
+                length: row.character_maximum_length.map(|v| v as i64),
+                precision: row.numeric_precision.map(|v| v as i64),
+                scale: row.numeric_scale.map(|v| v as i64),
             })
             .collect())
     }
 
     async fn get_table_ddl(&self, schema: Option<&str>, table: &str) -> Result<TableDDLInfo> {
         let schema = schema.map(str::to_string).unwrap_or(self.schema().await?);
-        let object_type: Option<String> = sqlx::query_scalar(
-            r#"
-            select table_type
-            from information_schema.tables
-            where table_schema = $1 and table_name = $2
-            "#,
-        )
-        .bind(&schema)
-        .bind(table)
-        .fetch_optional(&self.pool)
-        .await?;
+        let object_type: Option<String> =
+            sqlx::query_file_scalar!("sql/postgres/get_table_type.sql", &schema, table)
+                .fetch_one(&self.pool)
+                .await
+                .ok()
+                .flatten();
         let object_type = object_type.unwrap_or_else(|| "TABLE".to_string());
-        let ddl = if object_type == "VIEW" {
-            sqlx::query_scalar(
-                r#"
-                select pg_get_viewdef(format('%I.%I', $1, $2)::regclass, true)
-                "#,
-            )
-            .bind(&schema)
-            .bind(table)
-            .fetch_one(&self.pool)
-            .await?
+        let ddl: String = if object_type == "VIEW" {
+            sqlx::query_file_scalar!("sql/postgres/get_view_ddl.sql", &schema, table)
+                .fetch_one(&self.pool)
+                .await?
+                .unwrap_or_default()
         } else {
             let columns = self.describe_table(Some(&schema), table).await?;
             let mut ddl = format!(

@@ -1,6 +1,6 @@
 # db-mcp
 
-Rust MCP database server built on `cloudiful-server` + `axum`.
+Rust MCP database server. Built on the official Rust MCP SDK (`rmcp`, from the modelcontextprotocol/rust-sdk project) with an embedded `axum` HTTP server; uses `sqlx` for PostgreSQL and SQLite.
 
 ## Run
 
@@ -32,6 +32,8 @@ cargo run
 
 ## Notes
 
+- Transport modes: `stdio`, `http`, or `both` (via config or `DBMCP_TRANSPORT`)
+- HTTP serves the MCP Streamable HTTP endpoint at `/mcp`, plus `/healthz` and `/readyz`; optional bearer auth via config
 - There is no implicit default database selection; every MCP tool that touches a database must receive an explicit `connection` name
 - Call `list_connections` or read `db://connections` first, then copy one of the returned names into later tool calls
 - PostgreSQL and Oracle connections default to `readOnly: true` and run queries inside read-only transactions

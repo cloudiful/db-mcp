@@ -12,6 +12,7 @@ mod postgres_query;
 mod rows;
 pub mod sqlite;
 mod sqlite_dsn;
+mod sqlite_query;
 mod types;
 mod unavailable;
 
@@ -26,9 +27,6 @@ pub fn chrono_like_now() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
-pub fn call_tool_ok<T: serde::Serialize>(
-    text: impl Into<String>,
-    value: &T,
-) -> Result<rmcp::model::CallToolResult> {
-    call_tool_json(text, value)
+pub fn call_tool_ok<T: serde::Serialize>(value: &T) -> Result<rmcp::model::CallToolResult> {
+    call_tool_json(value)
 }

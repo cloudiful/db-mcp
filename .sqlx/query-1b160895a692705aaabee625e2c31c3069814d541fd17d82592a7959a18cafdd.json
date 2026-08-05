@@ -1,0 +1,51 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select schemaname::text as schemaname,\n       tablename::text as tablename,\n       indexname::text as indexname,\n       indexdef::text as indexdef\nfrom pg_indexes\nwhere schemaname = $1 and tablename = $2\norder by indexname\nlimit $3\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "schemaname",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "tablename",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "indexname",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "indexdef",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "pg_indexes",
+            "name": "indexdef"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Name",
+        "Name",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      true
+    ]
+  },
+  "hash": "1b160895a692705aaabee625e2c31c3069814d541fd17d82592a7959a18cafdd"
+}

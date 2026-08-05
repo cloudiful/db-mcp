@@ -1,0 +1,67 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select\n    c.conname::text as name,\n    n.nspname::text as schema,\n    rel.relname::text as table_name,\n    case c.contype\n        when 'p' then 'PRIMARY KEY'\n        when 'u' then 'UNIQUE'\n        when 'f' then 'FOREIGN KEY'\n        when 'c' then 'CHECK'\n        else c.contype::text\n    end as constraint_type,\n    pg_get_constraintdef(c.oid, true)::text as definition,\n    case when c.confrelid <> 0 then nconf.nspname::text end as referenced_schema,\n    case when c.confrelid <> 0 then relconf.relname::text end as referenced_table\nfrom pg_constraint c\njoin pg_class rel on rel.oid = c.conrelid\njoin pg_namespace n on n.oid = rel.relnamespace\nleft join pg_class relconf on relconf.oid = c.confrelid\nleft join pg_namespace nconf on nconf.oid = relconf.relnamespace\nwhere n.nspname = $1 and rel.relname = $2\norder by c.conname\nlimit $3\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "schema",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "table_name",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "constraint_type",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "definition",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "referenced_schema",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "referenced_table",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Name",
+        "Name",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "21e72d3d7ba2f84f7161b88738e4bbf053ec6edc21ccf7dffa0ff6535f444c4f"
+}

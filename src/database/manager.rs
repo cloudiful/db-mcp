@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex, Once},
+    sync::{Arc, Mutex},
 };
 use tracing::{info, warn};
 
@@ -26,11 +26,8 @@ pub struct Manager {
     limits: Limits,
 }
 
-static SQLX_ANY_DRIVERS: Once = Once::new();
-
 impl Manager {
     pub async fn new(cfg: &config::Config) -> Result<Self> {
-        SQLX_ANY_DRIVERS.call_once(sqlx::any::install_default_drivers);
         let limits = Limits::from_config(cfg)?;
         let mut slots = BTreeMap::new();
         for conn_cfg in &cfg.connections {

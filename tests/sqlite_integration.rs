@@ -18,10 +18,9 @@ fn test_db_path() -> PathBuf {
 
 #[tokio::test]
 async fn sqlite_read_only_dsn_supports_sequential_query_inputs() {
-    sqlx::any::install_default_drivers();
     let path = test_db_path();
     let writable_dsn = format!("sqlite://{}?mode=rwc", path.display());
-    let pool = sqlx::AnyPool::connect(&writable_dsn)
+    let pool = sqlx::SqlitePool::connect(&writable_dsn)
         .await
         .expect("create sqlite database");
     sqlx::query("create table if not exists batch_test (value integer)")

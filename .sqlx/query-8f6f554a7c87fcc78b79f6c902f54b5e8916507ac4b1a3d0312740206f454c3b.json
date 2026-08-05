@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select obj_description((quote_ident($1) || '.' || quote_ident($2))::regclass::oid, 'pg_class') as table_comment\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "table_comment",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "8f6f554a7c87fcc78b79f6c902f54b5e8916507ac4b1a3d0312740206f454c3b"
+}

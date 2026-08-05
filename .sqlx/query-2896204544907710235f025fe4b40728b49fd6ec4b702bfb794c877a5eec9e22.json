@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select schema_name::text as schema_name\nfrom information_schema.schemata\nwhere schema_name not like 'pg_%'\n  and schema_name <> 'information_schema'\n  and lower(schema_name) like lower($1)\norder by schema_name\nlimit $2\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "schema_name",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "2896204544907710235f025fe4b40728b49fd6ec4b702bfb794c877a5eec9e22"
+}

@@ -13,16 +13,9 @@ impl DbMcpService {
     ) -> Result<CallToolResult> {
         let refresh = input.refresh.unwrap_or(true);
         let health = self.state.manager.health(None, refresh).await?;
-        let output = ListConnectionsOutput {
+        database::call_tool_json(&ListConnectionsOutput {
             connections: health.connections,
-        };
-        database::call_tool_json(
-            format!(
-                "Configured {} connection(s). Pass one of these names as connection in other tools.",
-                output.connections.len()
-            ),
-            &output,
-        )
+        })
     }
 
     pub(super) async fn diagnose_connection(
@@ -34,13 +27,7 @@ impl DbMcpService {
             .manager
             .diagnose(input.connection.as_deref(), input.deep.unwrap_or(false))
             .await?;
-        database::call_tool_json(
-            format!(
-                "Returned diagnostic data for {} connection(s).",
-                diagnostics.len()
-            ),
-            &DiagnoseConnectionOutput { diagnostics },
-        )
+        database::call_tool_json(&DiagnoseConnectionOutput { diagnostics })
     }
 
     pub(super) async fn list_schemas(&self, input: ListInput) -> Result<CallToolResult> {
@@ -48,14 +35,10 @@ impl DbMcpService {
         let schemas = conn
             .list_schemas(input.filter.as_deref(), input.limit.unwrap_or(0))
             .await?;
-        let output = ListSchemasOutput {
+        database::call_tool_json(&ListSchemasOutput {
             connection: conn.info().name,
             schemas,
-        };
-        database::call_tool_json(
-            format!("Returned {} schema(s).", output.schemas.len()),
-            &output,
-        )
+        })
     }
 
     pub(super) async fn list_tables(&self, input: ListInput) -> Result<CallToolResult> {
@@ -64,14 +47,10 @@ impl DbMcpService {
         let tables = conn
             .list_tables(schema, input.filter.as_deref(), input.limit.unwrap_or(0))
             .await?;
-        let output = ListTablesOutput {
+        database::call_tool_json(&ListTablesOutput {
             connection: conn.info().name,
             tables,
-        };
-        database::call_tool_json(
-            format!("Returned {} table/view entries.", output.tables.len()),
-            &output,
-        )
+        })
     }
 
     pub(super) async fn search_columns(&self, input: SearchColumnsInput) -> Result<CallToolResult> {
@@ -80,14 +59,10 @@ impl DbMcpService {
         let matches = conn
             .search_columns(schema, input.filter.as_deref(), input.limit.unwrap_or(0))
             .await?;
-        let output = SearchColumnsOutput {
+        database::call_tool_json(&SearchColumnsOutput {
             connection: conn.info().name,
             matches,
-        };
-        database::call_tool_json(
-            format!("Returned {} column match(es).", output.matches.len()),
-            &output,
-        )
+        })
     }
 
     pub(super) async fn list_constraints(
@@ -99,14 +74,10 @@ impl DbMcpService {
         let constraints = conn
             .list_constraints(schema, input.table.as_deref(), input.limit.unwrap_or(0))
             .await?;
-        let output = ListConstraintsOutput {
+        database::call_tool_json(&ListConstraintsOutput {
             connection: conn.info().name,
             constraints,
-        };
-        database::call_tool_json(
-            format!("Returned {} constraint row(s).", output.constraints.len()),
-            &output,
-        )
+        })
     }
 
     pub(super) async fn list_indexes(&self, input: ListConstraintsInput) -> Result<CallToolResult> {
@@ -115,14 +86,10 @@ impl DbMcpService {
         let indexes = conn
             .list_indexes(schema, input.table.as_deref(), input.limit.unwrap_or(0))
             .await?;
-        let output = ListIndexesOutput {
+        database::call_tool_json(&ListIndexesOutput {
             connection: conn.info().name,
             indexes,
-        };
-        database::call_tool_json(
-            format!("Returned {} index row(s).", output.indexes.len()),
-            &output,
-        )
+        })
     }
 
     pub(super) async fn get_table_comments(&self, input: TableInput) -> Result<CallToolResult> {
@@ -130,13 +97,10 @@ impl DbMcpService {
         let comments = conn
             .get_table_comments(input.schema.as_deref(), &input.table)
             .await?;
-        database::call_tool_json(
-            format!("Loaded comments for {}.{}", comments.schema, comments.table),
-            &GetTableCommentsOutput {
-                connection: conn.info().name,
-                comments,
-            },
-        )
+        database::call_tool_json(&GetTableCommentsOutput {
+            connection: conn.info().name,
+            comments,
+        })
     }
 
     pub(super) async fn describe_table(&self, input: TableInput) -> Result<CallToolResult> {
@@ -144,7 +108,7 @@ impl DbMcpService {
         let columns = conn
             .describe_table(input.schema.as_deref(), &input.table)
             .await?;
-        let output = DescribeTableOutput {
+        database::call_tool_json(&DescribeTableOutput {
             connection: conn.info().name,
             schema: input
                 .schema
@@ -152,11 +116,7 @@ impl DbMcpService {
                 .unwrap_or_else(|| conn.info().default_schema),
             table: input.table,
             columns,
-        };
-        database::call_tool_json(
-            format!("Described {}.{}.", output.schema, output.table),
-            &output,
-        )
+        })
     }
 
     pub(super) async fn get_table_ddl(&self, input: TableInput) -> Result<CallToolResult> {
@@ -164,16 +124,10 @@ impl DbMcpService {
         let ddl = conn
             .get_table_ddl(input.schema.as_deref(), &input.table)
             .await?;
-        database::call_tool_json(
-            format!(
-                "Loaded {} DDL for {}.{}.",
-                ddl.object_type, ddl.schema, ddl.table
-            ),
-            &GetTableDDLOutput {
-                connection: conn.info().name,
-                ddl,
-            },
-        )
+        database::call_tool_json(&GetTableDDLOutput {
+            connection: conn.info().name,
+            ddl,
+        })
     }
 
     pub(super) async fn execute_query(&self, input: ExecuteQueryInput) -> Result<CallToolResult> {
@@ -185,20 +139,10 @@ impl DbMcpService {
                 self.state.manager.limits(),
             )
             .await?;
-        let text = format!(
-            "Returned {} row(s) with {} column(s) from {} in {}.",
-            result.row_count,
-            result.columns.len(),
-            conn.info().name,
-            result.execution_time
-        );
-        database::call_tool_json(
-            text,
-            &ExecuteQueryOutput {
-                connection: conn.info().name,
-                result,
-            },
-        )
+        database::call_tool_json(&ExecuteQueryOutput {
+            connection: conn.info().name,
+            result,
+        })
     }
 
     pub(super) async fn execute_queries(
@@ -207,13 +151,7 @@ impl DbMcpService {
     ) -> Result<CallToolResult> {
         let conn = self.state.manager.connection(input.connection.as_deref())?;
         let output = execute_query_batch(&*conn, input, self.state.manager.limits()).await?;
-        database::call_tool_json(
-            format!(
-                "Processed {} batch query statement(s) on {} with status {}.",
-                output.statement_count, output.connection, output.status
-            ),
-            &output,
-        )
+        database::call_tool_json(&output)
     }
 
     pub(super) async fn explain_query(&self, input: ExplainQueryInput) -> Result<CallToolResult> {
@@ -221,16 +159,9 @@ impl DbMcpService {
         let explain = conn
             .explain_query(&input.sql, self.state.manager.limits())
             .await?;
-        database::call_tool_json(
-            format!(
-                "Explained query on {} with {} plan line(s).",
-                conn.info().name,
-                explain.plan_lines.len()
-            ),
-            &ExplainQueryOutput {
-                connection: conn.info().name,
-                explain,
-            },
-        )
+        database::call_tool_json(&ExplainQueryOutput {
+            connection: conn.info().name,
+            explain,
+        })
     }
 }

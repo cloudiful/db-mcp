@@ -1,0 +1,39 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select table_schema::text as table_schema,\n       table_name::text as table_name,\n       table_type::text as table_type\nfrom information_schema.tables\nwhere table_schema = $1\n  and lower(table_name) like lower($2)\n  and table_type in ('BASE TABLE', 'VIEW')\norder by table_name\nlimit $3\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "table_schema",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "table_name",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "table_type",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Name",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "9dbc07717c31e163ef8a777fecf37b68f168d9aa3b16c880791839e353766934"
+}

@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select current_schema()::text\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "current_schema",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "6db5233e1b9671ffeb0eb855724a7a6f6e317c4fca018451ffbff7bcb11e6eba"
+}

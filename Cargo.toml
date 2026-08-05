@@ -2,6 +2,7 @@
 name = "db-mcp"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.94"
 license = "Apache-2.0"
 description = "Minimal MCP server for databases"
 readme = "README.md"
@@ -17,19 +18,21 @@ axum = "0.8.9"
 base64 = "0.22.1"
 chrono = { version = "0.4.44", default-features = false, features = ["clock"] }
 clap = { version = "4.6.1", features = ["derive", "env"] }
-cloudiful-server = { package = "cloudiful-server", version = "0.2.4", default-features = false, features = ["axum", "mcp"] }
 futures-util = "0.3.32"
 humantime = "2.3.0"
 oracle-rs = "0.1.7"
-rmcp = { version = "1.7.0", features = ["server", "schemars", "transport-io", "transport-streamable-http-server", "transport-streamable-http-server-session"] }
+rmcp = { version = "3.1.0", default-features = false, features = ["macros", "server", "schemars", "transport-io", "transport-streamable-http-server", "transport-streamable-http-server-session"] }
 schemars = "1.2.1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
-sqlx = { version = "0.8.6", default-features = false, features = ["any", "postgres", "sqlite", "runtime-tokio-rustls"] }
-tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread", "signal", "time"] }
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "tls-rustls-ring", "postgres", "sqlite", "macros", "sqlx-toml"] }
+tokio = { version = "1.52.3", features = ["macros", "net", "rt-multi-thread", "signal", "time"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 tower = "0.5"
+tower-http = { version = "0.6", features = ["cors"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 url = "2.5.8"
 
 [dev-dependencies]
+rmcp = { version = "3.1.0", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }

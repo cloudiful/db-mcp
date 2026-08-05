@@ -1,5 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -7,7 +8,7 @@ use crate::config;
 
 use super::diagnostics::{ConnectionDiagnostic, ProbeCheck};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionHealth {
     pub name: String,
@@ -25,20 +26,20 @@ pub struct ConnectionHealth {
 
 pub type ConnectionInfo = ConnectionHealth;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct HealthSnapshot {
     pub status: String,
     pub connections: Vec<ConnectionHealth>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SchemaInfo {
     pub name: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TableInfo {
     pub schema: String,
@@ -46,7 +47,7 @@ pub struct TableInfo {
     pub table_type: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ColumnInfo {
     pub name: String,
@@ -58,7 +59,7 @@ pub struct ColumnInfo {
     pub scale: Option<i64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ColumnMatchInfo {
     pub schema: String,
@@ -68,7 +69,7 @@ pub struct ColumnMatchInfo {
     pub position: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ConstraintInfo {
     pub name: Option<String>,
@@ -83,7 +84,7 @@ pub struct ConstraintInfo {
     pub definition: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct IndexInfo {
     pub schema: String,
@@ -97,14 +98,14 @@ pub struct IndexInfo {
     pub definition: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ColumnCommentInfo {
     pub name: String,
     pub comment: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TableCommentInfo {
     pub schema: String,
@@ -114,7 +115,7 @@ pub struct TableCommentInfo {
     pub notice: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TableDDLInfo {
     pub schema: String,
@@ -124,7 +125,7 @@ pub struct TableDDLInfo {
     pub notice: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ExplainResultData {
     pub format: String,
@@ -132,14 +133,14 @@ pub struct ExplainResultData {
     pub notice: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryColumn {
     pub name: String,
     pub data_type: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryResult {
     pub columns: Vec<QueryColumn>,

@@ -13,15 +13,11 @@ pub enum TransportMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum HttpAuthMode {
+    #[default]
     None,
     Bearer,
-}
-
-impl Default for HttpAuthMode {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -87,42 +83,22 @@ impl Default for LimitsConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
+#[derive(Default)]
 pub struct Config {
     pub server: ServerConfig,
     pub limits: LimitsConfig,
     pub connections: Vec<ConnectionConfig>,
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            server: ServerConfig::default(),
-            limits: LimitsConfig::default(),
-            connections: vec![],
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
+#[derive(Default)]
 pub struct ConnectionConfig {
     pub name: String,
     pub driver: String,
     pub oracle: Option<OracleConfig>,
     pub postgres: Option<PostgresConfig>,
     pub sqlite: Option<SQLiteConfig>,
-}
-
-impl Default for ConnectionConfig {
-    fn default() -> Self {
-        Self {
-            name: String::new(),
-            driver: String::new(),
-            oracle: None,
-            postgres: None,
-            sqlite: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -233,7 +209,7 @@ impl Config {
         if http_addr.is_empty() {
             self.server.http_addr = "0.0.0.0:8080".to_string();
         } else {
-            self.server.http_addr = cloudiful_server::normalize_listen_addr(http_addr);
+            self.server.http_addr = normalize_listen_addr(http_addr);
         }
         if self.server.http_path.trim().is_empty() || !self.server.http_path.starts_with('/') {
             self.server.http_path = "/mcp".to_string();
@@ -326,16 +302,28 @@ fn default_connection_name(driver: &str, idx: usize) -> String {
     }
 }
 
-fn apply_env(cfg: &mut Config) {
-    if let Ok(v) = env::var("DBMCP_DEBUG") {
-        if let Ok(parsed) = v.parse::<bool>() {
-            cfg.server.debug = parsed;
-        }
+/// Normalize a listen address into `host:port` form, defaulting an empty host
+/// to `0.0.0.0` (e.g. `:8080` becomes `0.0.0.0:8080`).
+pub fn normalize_listen_addr(addr: &str) -> String {
+    if addr.is_empty() {
+        return "0.0.0.0:8080".to_string();
     }
-    if let Ok(v) = env::var("DBMCP_TRANSPORT") {
-        if let Ok(parsed) = parse_transport(&v) {
-            cfg.server.transport = parsed;
-        }
+    match addr.rsplit_once(':') {
+        Some((host, _port)) if !host.is_empty() => addr.to_string(),
+        Some((_, port)) => format!("0.0.0.0:{port}"),
+        None => addr.to_string(),
+    }
+}
+
+fn apply_env(cfg: &mut Config) {
+    if let Some(parsed) = env::var("DBMCP_DEBUG").ok().and_then(|v| v.parse().ok()) {
+        cfg.server.debug = parsed;
+    }
+    if let Some(parsed) = env::var("DBMCP_TRANSPORT")
+        .ok()
+        .and_then(|v| parse_transport(&v).ok())
+    {
+        cfg.server.transport = parsed;
     }
     if let Ok(v) = env::var("DBMCP_HTTP_ADDR") {
         cfg.server.http_addr = v;
@@ -433,4 +421,30 @@ fn load_env_connections() -> Vec<ConnectionConfig> {
     }
 
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_listen_addr;
+
+    #[test]
+    fn keeps_full_host_port_address() {
+        assert_eq!(normalize_listen_addr("127.0.0.1:8080"), "127.0.0.1:8080");
+        assert_eq!(normalize_listen_addr("0.0.0.0:8080"), "0.0.0.0:8080");
+    }
+
+    #[test]
+    fn defaults_empty_host_to_wildcard() {
+        assert_eq!(normalize_listen_addr(":8080"), "0.0.0.0:8080");
+    }
+
+    #[test]
+    fn defaults_empty_address_to_default_port() {
+        assert_eq!(normalize_listen_addr(""), "0.0.0.0:8080");
+    }
+
+    #[test]
+    fn keeps_address_without_port() {
+        assert_eq!(normalize_listen_addr("localhost"), "localhost");
+    }
 }

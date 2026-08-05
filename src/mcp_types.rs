@@ -84,61 +84,61 @@ pub struct ExplainQueryInput {
     pub sql: String,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ListConnectionsOutput {
     pub connections: Vec<database::ConnectionHealth>,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DiagnoseConnectionOutput {
     pub diagnostics: Vec<database::ConnectionDiagnostic>,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ListSchemasOutput {
     pub connection: String,
     pub schemas: Vec<database::SchemaInfo>,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ListTablesOutput {
     pub connection: String,
     pub tables: Vec<database::TableInfo>,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchColumnsOutput {
     pub connection: String,
     pub matches: Vec<database::ColumnMatchInfo>,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ListConstraintsOutput {
     pub connection: String,
     pub constraints: Vec<database::ConstraintInfo>,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ListIndexesOutput {
     pub connection: String,
     pub indexes: Vec<database::IndexInfo>,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct GetTableCommentsOutput {
     pub connection: String,
     pub comments: database::TableCommentInfo,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DescribeTableOutput {
     pub connection: String,
@@ -147,35 +147,35 @@ pub struct DescribeTableOutput {
     pub columns: Vec<database::ColumnInfo>,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct GetTableDDLOutput {
     pub connection: String,
     pub ddl: database::TableDDLInfo,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecuteQueryOutput {
     pub connection: String,
     pub result: database::QueryResult,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecuteQueriesResult {
     pub index: usize,
     pub result: database::QueryResult,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecuteQueriesError {
     pub index: usize,
     pub message: String,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecuteQueriesOutput {
     pub connection: String,
@@ -185,7 +185,7 @@ pub struct ExecuteQueriesOutput {
     pub error: Option<ExecuteQueriesError>,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ExplainQueryOutput {
     pub connection: String,

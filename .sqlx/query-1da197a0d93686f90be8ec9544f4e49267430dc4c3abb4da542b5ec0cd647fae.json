@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select a.attname::text as name, coalesce(d.description, '') as comment\nfrom pg_attribute a\njoin pg_class c on c.oid = a.attrelid\njoin pg_namespace n on n.oid = c.relnamespace\nleft join pg_description d on d.objoid = a.attrelid and d.objsubid = a.attnum\nwhere n.nspname = $1 and c.relname = $2 and a.attnum > 0 and not a.attisdropped\norder by a.attnum\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "comment",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Name",
+        "Name"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "1da197a0d93686f90be8ec9544f4e49267430dc4c3abb4da542b5ec0cd647fae"
+}

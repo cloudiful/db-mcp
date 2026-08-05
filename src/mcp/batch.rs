@@ -83,10 +83,9 @@ mod tests {
     }
 
     async fn read_only_connection() -> (SQLiteConnection, Limits, PathBuf) {
-        sqlx::any::install_default_drivers();
         let path = test_db_path();
         let writable_dsn = format!("sqlite://{}?mode=rwc", path.display());
-        let pool = sqlx::AnyPool::connect(&writable_dsn)
+        let pool = sqlx::SqlitePool::connect(&writable_dsn)
             .await
             .expect("create sqlite database");
         sqlx::query("create table if not exists batch_test (value integer)")
@@ -175,7 +174,6 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_non_read_only_sqlite_batches() {
-        sqlx::any::install_default_drivers();
         let limits = limits();
         let conn = SQLiteConnection::new(
             "sqlite-test".to_string(),

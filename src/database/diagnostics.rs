@@ -1,10 +1,11 @@
 use anyhow::Result;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
 use super::ConnectionInfo;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ProbeCheck {
     pub phase: String,
@@ -15,7 +16,7 @@ pub struct ProbeCheck {
     pub error_chain: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionDiagnostic {
     pub name: String,

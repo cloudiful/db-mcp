@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select table_type\nfrom information_schema.tables\nwhere table_schema = $1 and table_name = $2\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "table_type",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "information_schema.tables",
+            "name": "table_type"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Name",
+        "Name"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "240965b822f0df07e2bb4f48fe3d2aeea411c2358c8ca5092ce67ea1ee335ba5"
+}

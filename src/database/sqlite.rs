@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
-use sqlx::{AnyPool, Row};
+use sqlx::sqlite::SqlitePool;
+use sqlx::{Row, Sqlite};
 use std::sync::{Arc, RwLock};
 
 use crate::config;
@@ -12,13 +13,13 @@ pub struct SQLiteConnection {
     dsn: String,
     read_only: bool,
     limits: Limits,
-    pool: AnyPool,
+    pool: SqlitePool,
     default_schema: Arc<RwLock<String>>,
 }
 
 impl SQLiteConnection {
     pub fn new(name: String, config: config::SQLiteConfig, limits: Limits) -> Result<Self> {
-        let pool = AnyPool::connect_lazy(&config.dsn)?;
+        let pool = SqlitePool::connect_lazy(&config.dsn)?;
         Ok(Self {
             name,
             dsn: config.dsn,
@@ -68,13 +69,10 @@ impl DatabaseConnection for SQLiteConnection {
     }
 
     async fn ping(&self) -> Result<()> {
-        tokio::time::timeout(
-            self.limits.query_timeout,
-            sqlx::query_scalar::<_, i64>("select 1").fetch_one(&self.pool),
-        )
-        .await
-        .with_context(|| format!("sqlite ping timeout name={} dsn={}", self.name, self.dsn))?
-        .with_context(|| format!("sqlite ping failed name={} dsn={}", self.name, self.dsn))?;
+        tokio::time::timeout(self.limits.query_timeout, sqlite_query::ping(&self.pool))
+            .await
+            .with_context(|| format!("sqlite ping timeout name={} dsn={}", self.name, self.dsn))?
+            .with_context(|| format!("sqlite ping failed name={} dsn={}", self.name, self.dsn))?;
         Ok(())
     }
 
@@ -114,13 +112,10 @@ impl DatabaseConnection for SQLiteConnection {
 
         checks.push(
             timed_probe("pingQuery", target.clone(), || async {
-                tokio::time::timeout(
-                    self.limits.query_timeout,
-                    sqlx::query_scalar::<_, i64>("select 1").fetch_one(&self.pool),
-                )
-                .await
-                .context("sqlite ping query timeout")?
-                .context("sqlite ping query failed")?;
+                tokio::time::timeout(self.limits.query_timeout, sqlite_query::ping(&self.pool))
+                    .await
+                    .context("sqlite ping query timeout")?
+                    .context("sqlite ping query failed")?;
                 Ok(())
             })
             .await,
@@ -131,10 +126,12 @@ impl DatabaseConnection for SQLiteConnection {
 
         checks.push(
             timed_probe("metadataSmokeTest", target, || async {
-                sqlx::query("pragma database_list")
-                    .fetch_all(&self.pool)
-                    .await
-                    .context("sqlite metadata smoke test")?;
+                sqlx::query(sqlx::AssertSqlSafe(include_str!(
+                    "../../sql/sqlite/metadata_smoke.sql"
+                )))
+                .fetch_one(&self.pool)
+                .await
+                .context("sqlite metadata smoke test")?;
                 Ok(())
             })
             .await,
@@ -145,9 +142,11 @@ impl DatabaseConnection for SQLiteConnection {
     async fn list_schemas(&self, filter: Option<&str>, limit: usize) -> Result<Vec<SchemaInfo>> {
         let filter = filter.unwrap_or("");
         let limit = self.limits.normalize_list_limit(limit);
-        let rows = sqlx::query("pragma database_list")
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = sqlx::query(sqlx::AssertSqlSafe(include_str!(
+            "../../sql/sqlite/database_list.sql"
+        )))
+        .fetch_all(&self.pool)
+        .await?;
         Ok(rows
             .into_iter()
             .filter_map(|row| {
@@ -173,7 +172,9 @@ impl DatabaseConnection for SQLiteConnection {
             "select name, type from {}.sqlite_master where type in ('table','view') order by name",
             quote_ident(&schema)
         );
-        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
+            .fetch_all(&self.pool)
+            .await?;
         Ok(rows
             .into_iter()
             .filter_map(|row| {
@@ -208,7 +209,9 @@ impl DatabaseConnection for SQLiteConnection {
                 quote_ident(&schema),
                 quote_string(&table.name)
             );
-            let rows = sqlx::query(&pragma).fetch_all(&self.pool).await?;
+            let rows = sqlx::query(sqlx::AssertSqlSafe(pragma))
+                .fetch_all(&self.pool)
+                .await?;
             for row in rows {
                 let column: String = row.try_get("name").unwrap_or_default();
                 if !column.to_lowercase().contains(&filter)
@@ -244,7 +247,9 @@ impl DatabaseConnection for SQLiteConnection {
             quote_ident(&schema),
             quote_string(table)
         );
-        let rows = sqlx::query(&pragma).fetch_all(&self.pool).await?;
+        let rows = sqlx::query(sqlx::AssertSqlSafe(pragma))
+            .fetch_all(&self.pool)
+            .await?;
         let mut out = vec![];
         for row in rows {
             out.push(ConstraintInfo {
@@ -279,15 +284,17 @@ impl DatabaseConnection for SQLiteConnection {
             quote_ident(&schema),
             quote_string(table)
         );
-        let rows = sqlx::query(&pragma).fetch_all(&self.pool).await?;
+        let rows = sqlx::query(sqlx::AssertSqlSafe(pragma))
+            .fetch_all(&self.pool)
+            .await?;
         let mut out = vec![];
         for row in rows {
             let name: String = row.try_get("name").unwrap_or_default();
-            let cols = sqlx::query(&format!(
+            let cols = sqlx::query(sqlx::AssertSqlSafe(format!(
                 "pragma {}.index_info({})",
                 quote_ident(&schema),
                 quote_string(&name)
-            ))
+            )))
             .fetch_all(&self.pool)
             .await?;
             let columns = cols
@@ -333,7 +340,9 @@ impl DatabaseConnection for SQLiteConnection {
             quote_ident(&schema),
             quote_string(table)
         );
-        let rows = sqlx::query(&pragma).fetch_all(&self.pool).await?;
+        let rows = sqlx::query(sqlx::AssertSqlSafe(pragma))
+            .fetch_all(&self.pool)
+            .await?;
         Ok(rows
             .into_iter()
             .map(|row| ColumnInfo {
@@ -354,7 +363,7 @@ impl DatabaseConnection for SQLiteConnection {
             "select sql from {}.sqlite_master where name = ?",
             quote_ident(&schema)
         );
-        let ddl: Option<String> = sqlx::query_scalar(&sql)
+        let ddl: Option<String> = sqlx::query_scalar::<Sqlite, String>(sqlx::AssertSqlSafe(sql))
             .bind(table)
             .fetch_optional(&self.pool)
             .await?;
@@ -374,12 +383,12 @@ impl DatabaseConnection for SQLiteConnection {
         limits: &Limits,
     ) -> Result<QueryResult> {
         let sql = strip_trailing_sql_terminator(sql);
-        collect_rows(&self.pool, sql, max_rows, limits).await
+        sqlite_query::collect_rows(&self.pool, sql, max_rows, limits).await
     }
 
     async fn explain_query(&self, sql: &str, limits: &Limits) -> Result<ExplainResultData> {
         let sql = strip_trailing_sql_terminator(sql);
-        let rows = sqlx::query(&format!("EXPLAIN QUERY PLAN {sql}"))
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!("EXPLAIN QUERY PLAN {sql}")))
             .fetch_all(&self.pool)
             .await?;
         let mut lines = vec![];
