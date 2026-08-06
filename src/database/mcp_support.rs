@@ -1,5 +1,5 @@
 use anyhow::Result;
-use rmcp::handler::server::tool::schema_for_input;
+use rmcp::handler::server::tool::{schema_for_input, schema_for_output};
 use rmcp::model::{
     CallToolResult, ContentBlock, GetPromptResult, ListPromptsResult, ListResourceTemplatesResult,
     ListResourcesResult, ListToolsResult, Prompt, PromptArgument, PromptMessage,
@@ -9,6 +9,66 @@ use rmcp::model::{
 use serde::Serialize;
 use serde_json::{Map, Value};
 use std::sync::Arc;
+
+/// Formats that JSON Schema draft 2020-12 defines, plus numeric formats widely
+/// recognized by validators (ajv and friends). Anything outside this list is
+/// stripped from generated schemas: schemars emits Rust-specific formats such
+/// as `uint` for `usize`, which strict clients reject with "unknown format"
+/// warnings.
+const KNOWN_FORMATS: &[&str] = &[
+    "date-time",
+    "date",
+    "time",
+    "duration",
+    "email",
+    "idn-email",
+    "hostname",
+    "idn-hostname",
+    "ipv4",
+    "ipv6",
+    "uri",
+    "uri-reference",
+    "iri",
+    "iri-reference",
+    "uuid",
+    "uri-template",
+    "json-pointer",
+    "relative-json-pointer",
+    "regex",
+    "int32",
+    "int64",
+    "float",
+    "double",
+    "byte",
+    "password",
+    "binary",
+    "url",
+];
+
+/// Recursively remove `format` keywords whose value is not a known format.
+/// `format` is only a validation hint, so dropping unknown values loses no
+/// usable contract information.
+fn strip_unknown_formats(map: &mut Map<String, Value>) {
+    let format = map.get("format").and_then(Value::as_str).map(str::to_owned);
+    if let Some(format) = format
+        && !KNOWN_FORMATS.contains(&format.as_str())
+    {
+        map.remove("format");
+    }
+    for value in map.values_mut() {
+        match value {
+            Value::Object(child) => strip_unknown_formats(child),
+            Value::Array(items) => {
+                for item in items {
+                    if let Value::Object(child) = item {
+                        strip_unknown_formats(child);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
 
 pub fn build_server_info(name: &str, version: &str) -> ServerInfo {
     ServerInfo::new(
@@ -127,12 +187,16 @@ pub fn list_resource_templates_result(
 }
 
 pub fn to_json_object<T: schemars::JsonSchema + std::any::Any>() -> Arc<Map<String, Value>> {
-    schema_for_input::<T>().expect("input schema is a valid object")
+    let mut schema = schema_for_input::<T>().expect("input schema is a valid object");
+    strip_unknown_formats(Arc::make_mut(&mut schema));
+    schema
 }
 
 /// Build a tool from input and output types. The input schema is validated and
 /// the output schema is populated from the `JsonSchema` implementation, so
-/// clients receive both contracts.
+/// clients receive both contracts. Unknown `format` values are stripped so
+/// strict schema validators do not warn about Rust-specific formats such as
+/// `uint`.
 pub fn tool_schema<I, O>(
     name: &'static str,
     description: &'static str,
@@ -142,13 +206,13 @@ where
     I: schemars::JsonSchema + std::any::Any,
     O: schemars::JsonSchema + std::any::Any,
 {
-    Tool::new(
-        name,
-        description,
-        schema_for_input::<I>().expect("input schema is a valid object"),
-    )
-    .with_output_schema::<O>()
-    .with_annotations(annotations)
+    let mut input_schema = schema_for_input::<I>().expect("input schema is a valid object");
+    strip_unknown_formats(Arc::make_mut(&mut input_schema));
+    let mut output_schema = schema_for_output::<O>();
+    strip_unknown_formats(Arc::make_mut(&mut output_schema));
+    Tool::new(name, description, input_schema)
+        .with_raw_output_schema(output_schema)
+        .with_annotations(annotations)
 }
 
 /// Annotations shared by read-only, idempotent metadata and diagnostics tools.
