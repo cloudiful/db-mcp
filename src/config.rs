@@ -76,7 +76,7 @@ impl Default for LimitsConfig {
             max_total_chars: 1000,
             explain_max_lines: 12,
             explain_max_total_chars: 4000,
-            query_timeout: "15s".to_string(),
+            query_timeout: "60s".to_string(),
         }
     }
 }
@@ -240,7 +240,7 @@ impl Config {
             self.limits.explain_max_total_chars = 4000;
         }
         if self.limits.query_timeout.trim().is_empty() {
-            self.limits.query_timeout = "15s".to_string();
+            self.limits.query_timeout = "60s".to_string();
         }
         humantime::parse_duration(&self.limits.query_timeout).context("invalid query_timeout")?;
 

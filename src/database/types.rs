@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -194,6 +194,21 @@ impl Limits {
             requested.min(self.hard_max_rows)
         }
     }
+}
+
+/// Run `fut` bounded by `limits.query_timeout`, mapping a timeout expiry or a
+/// failure into a context error prefixed with `what`.
+pub async fn run_with_timeout<T, F, E>(limits: &Limits, what: &str, fut: F) -> Result<T>
+where
+    E: Into<anyhow::Error>,
+    F: std::future::Future<Output = Result<T, E>>,
+{
+    let inner = tokio::time::timeout(limits.query_timeout, fut)
+        .await
+        .with_context(|| format!("{what} timeout"))?;
+    inner
+        .map_err(Into::into)
+        .with_context(|| format!("{what} failed"))
 }
 
 #[async_trait]

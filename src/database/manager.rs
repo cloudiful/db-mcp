@@ -369,7 +369,7 @@ mod tests {
                 max_total_chars: 1000,
                 explain_max_lines: 12,
                 explain_max_total_chars: 4000,
-                query_timeout: std::time::Duration::from_secs(15),
+                query_timeout: std::time::Duration::from_secs(60),
             },
         }
     }

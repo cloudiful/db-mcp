@@ -48,10 +48,12 @@ impl PostgresConnection {
                 .expect("default_schema poisoned") = self.config.schema.trim().to_string();
             return Ok(());
         }
-        let schema: Option<String> = sqlx::query_file_scalar!("sql/postgres/current_schema.sql")
-            .fetch_one(&self.pool)
-            .await
-            .context("current_schema")?;
+        let schema: Option<String> = run_with_timeout(
+            &self.limits,
+            "postgres current_schema",
+            sqlx::query_file_scalar!("sql/postgres/current_schema.sql").fetch_one(&self.pool),
+        )
+        .await?;
         if let Some(schema) = schema {
             *self
                 .default_schema
@@ -189,10 +191,12 @@ impl DatabaseConnection for PostgresConnection {
 
         checks.push(
             timed_probe("metadataSmokeTest", target, || async {
-                sqlx::query_file!("sql/postgres/metadata_smoke.sql")
-                    .fetch_one(&self.pool)
-                    .await
-                    .context("postgres metadata smoke test")?;
+                run_with_timeout(
+                    &self.limits,
+                    "postgres metadata smoke test",
+                    sqlx::query_file!("sql/postgres/metadata_smoke.sql").fetch_one(&self.pool),
+                )
+                .await?;
                 Ok(())
             })
             .await,
@@ -203,12 +207,16 @@ impl DatabaseConnection for PostgresConnection {
     async fn list_schemas(&self, filter: Option<&str>, limit: usize) -> Result<Vec<SchemaInfo>> {
         let limit = self.limits.normalize_list_limit(limit);
         let filter = filter.unwrap_or("");
-        let rows = sqlx::query_file!(
-            "sql/postgres/list_schemas.sql",
-            format!("%{filter}%"),
-            limit as i64
+        let rows = run_with_timeout(
+            &self.limits,
+            "postgres list_schemas",
+            sqlx::query_file!(
+                "sql/postgres/list_schemas.sql",
+                format!("%{filter}%"),
+                limit as i64
+            )
+            .fetch_all(&self.pool),
         )
-        .fetch_all(&self.pool)
         .await?;
         Ok(rows
             .into_iter()
@@ -227,13 +235,17 @@ impl DatabaseConnection for PostgresConnection {
         let limit = self.limits.normalize_list_limit(limit);
         let schema = schema.map(str::to_string).unwrap_or(self.schema().await?);
         let filter = filter.unwrap_or("");
-        let rows = sqlx::query_file!(
-            "sql/postgres/list_tables.sql",
-            &schema,
-            format!("%{filter}%"),
-            limit as i64
+        let rows = run_with_timeout(
+            &self.limits,
+            "postgres list_tables",
+            sqlx::query_file!(
+                "sql/postgres/list_tables.sql",
+                &schema,
+                format!("%{filter}%"),
+                limit as i64
+            )
+            .fetch_all(&self.pool),
         )
-        .fetch_all(&self.pool)
         .await?;
         Ok(rows
             .into_iter()
@@ -254,13 +266,17 @@ impl DatabaseConnection for PostgresConnection {
         let limit = self.limits.normalize_list_limit(limit);
         let schema = schema.map(str::to_string).unwrap_or(self.schema().await?);
         let filter = filter.unwrap_or("");
-        let rows = sqlx::query_file!(
-            "sql/postgres/search_columns.sql",
-            &schema,
-            format!("%{filter}%"),
-            limit as i64
+        let rows = run_with_timeout(
+            &self.limits,
+            "postgres search_columns",
+            sqlx::query_file!(
+                "sql/postgres/search_columns.sql",
+                &schema,
+                format!("%{filter}%"),
+                limit as i64
+            )
+            .fetch_all(&self.pool),
         )
-        .fetch_all(&self.pool)
         .await?;
         Ok(rows
             .into_iter()
@@ -283,13 +299,17 @@ impl DatabaseConnection for PostgresConnection {
         let schema = schema.map(str::to_string).unwrap_or(self.schema().await?);
         let table = table.context("table is required")?;
         let limit = self.limits.normalize_list_limit(limit);
-        let rows = sqlx::query_file!(
-            "sql/postgres/list_constraints.sql",
-            &schema,
-            table,
-            limit as i64
+        let rows = run_with_timeout(
+            &self.limits,
+            "postgres list_constraints",
+            sqlx::query_file!(
+                "sql/postgres/list_constraints.sql",
+                &schema,
+                table,
+                limit as i64
+            )
+            .fetch_all(&self.pool),
         )
-        .fetch_all(&self.pool)
         .await?;
 
         Ok(rows
@@ -318,13 +338,17 @@ impl DatabaseConnection for PostgresConnection {
         let schema = schema.map(str::to_string).unwrap_or(self.schema().await?);
         let table = table.context("table is required")?;
         let limit = self.limits.normalize_list_limit(limit);
-        let rows = sqlx::query_file!(
-            "sql/postgres/list_indexes.sql",
-            &schema,
-            table,
-            limit as i64
+        let rows = run_with_timeout(
+            &self.limits,
+            "postgres list_indexes",
+            sqlx::query_file!(
+                "sql/postgres/list_indexes.sql",
+                &schema,
+                table,
+                limit as i64
+            )
+            .fetch_all(&self.pool),
         )
-        .fetch_all(&self.pool)
         .await?;
         Ok(rows
             .into_iter()
@@ -357,15 +381,22 @@ impl DatabaseConnection for PostgresConnection {
         table: &str,
     ) -> Result<TableCommentInfo> {
         let schema = schema.map(str::to_string).unwrap_or(self.schema().await?);
-        let table_comment: Option<String> =
+        let table_comment: Option<String> = run_with_timeout(
+            &self.limits,
+            "postgres get_table_comment",
             sqlx::query_file_scalar!("sql/postgres/get_table_comment.sql", &schema, table)
-                .fetch_one(&self.pool)
-                .await
-                .ok()
-                .flatten();
-        let rows = sqlx::query_file!("sql/postgres/list_column_comments.sql", &schema, table)
-            .fetch_all(&self.pool)
-            .await?;
+                .fetch_one(&self.pool),
+        )
+        .await
+        .ok()
+        .flatten();
+        let rows = run_with_timeout(
+            &self.limits,
+            "postgres list_column_comments",
+            sqlx::query_file!("sql/postgres/list_column_comments.sql", &schema, table)
+                .fetch_all(&self.pool),
+        )
+        .await?;
         Ok(TableCommentInfo {
             schema,
             table: table.to_string(),
@@ -383,9 +414,13 @@ impl DatabaseConnection for PostgresConnection {
 
     async fn describe_table(&self, schema: Option<&str>, table: &str) -> Result<Vec<ColumnInfo>> {
         let schema = schema.map(str::to_string).unwrap_or(self.schema().await?);
-        let rows = sqlx::query_file!("sql/postgres/describe_table.sql", &schema, table)
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = run_with_timeout(
+            &self.limits,
+            "postgres describe_table",
+            sqlx::query_file!("sql/postgres/describe_table.sql", &schema, table)
+                .fetch_all(&self.pool),
+        )
+        .await?;
         Ok(rows
             .into_iter()
             .map(|row| ColumnInfo {
@@ -402,18 +437,25 @@ impl DatabaseConnection for PostgresConnection {
 
     async fn get_table_ddl(&self, schema: Option<&str>, table: &str) -> Result<TableDDLInfo> {
         let schema = schema.map(str::to_string).unwrap_or(self.schema().await?);
-        let object_type: Option<String> =
+        let object_type: Option<String> = run_with_timeout(
+            &self.limits,
+            "postgres get_table_type",
             sqlx::query_file_scalar!("sql/postgres/get_table_type.sql", &schema, table)
-                .fetch_one(&self.pool)
-                .await
-                .ok()
-                .flatten();
+                .fetch_one(&self.pool),
+        )
+        .await
+        .ok()
+        .flatten();
         let object_type = object_type.unwrap_or_else(|| "TABLE".to_string());
         let ddl: String = if object_type == "VIEW" {
-            sqlx::query_file_scalar!("sql/postgres/get_view_ddl.sql", &schema, table)
-                .fetch_one(&self.pool)
-                .await?
-                .unwrap_or_default()
+            run_with_timeout(
+                &self.limits,
+                "postgres get_view_ddl",
+                sqlx::query_file_scalar!("sql/postgres/get_view_ddl.sql", &schema, table)
+                    .fetch_one(&self.pool),
+            )
+            .await?
+            .unwrap_or_default()
         } else {
             let columns = self.describe_table(Some(&schema), table).await?;
             let mut ddl = format!(

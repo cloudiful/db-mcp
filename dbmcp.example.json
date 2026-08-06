@@ -14,7 +14,7 @@
     "maxTotalChars": 1000,
     "explainMaxLines": 12,
     "explainMaxTotalChars": 4000,
-    "queryTimeout": "15s"
+    "queryTimeout": "60s"
   },
   "connections": [
     {

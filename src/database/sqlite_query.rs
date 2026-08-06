@@ -6,7 +6,7 @@ use sqlx::sqlite::SqliteRow;
 use sqlx::{Column, Executor, Row, SqlSafeStr, SqliteConnection, SqlitePool, TypeInfo, ValueRef};
 use std::time::Instant;
 
-use super::{Limits, QueryColumn, QueryResult, RowCollector, empty_result};
+use super::{Limits, QueryColumn, QueryResult, RowCollector, empty_result, run_with_timeout};
 
 // SQLx checked query macros resolve one database per crate from the compile-time
 // DATABASE_URL, so SQLite probes cannot use query_file! in a mixed-backend crate.
@@ -26,7 +26,7 @@ pub async fn collect_rows(
     requested_max_rows: usize,
     limits: &Limits,
 ) -> Result<QueryResult> {
-    let mut conn = pool.acquire().await?;
+    let mut conn = run_with_timeout(limits, "sqlite acquire", pool.acquire()).await?;
     execute_sql_with_connection(&mut conn, sql, requested_max_rows, limits).await
 }
 
@@ -36,9 +36,12 @@ pub async fn execute_sql_with_connection(
     requested_max_rows: usize,
     limits: &Limits,
 ) -> Result<QueryResult> {
-    let describe = (&mut *conn)
-        .describe(sqlx::AssertSqlSafe(sql).into_sql_str())
-        .await?;
+    let describe = run_with_timeout(
+        limits,
+        "sqlite describe",
+        (&mut *conn).describe(sqlx::AssertSqlSafe(sql).into_sql_str()),
+    )
+    .await?;
     if describe.columns().is_empty() {
         let started = Instant::now();
         let result = tokio::time::timeout(

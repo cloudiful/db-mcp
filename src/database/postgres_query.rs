@@ -5,7 +5,10 @@ use sqlx::postgres::{PgConnection, PgPool};
 use sqlx::{Executor, Row, SqlSafeStr};
 use std::time::Instant;
 
-use super::{ExplainResultData, Limits, QueryColumn, QueryResult, RowCollector, empty_result};
+use super::{
+    ExplainResultData, Limits, QueryColumn, QueryResult, RowCollector, empty_result,
+    run_with_timeout,
+};
 
 pub async fn execute_query(
     pool: &PgPool,
@@ -14,18 +17,22 @@ pub async fn execute_query(
     requested_max_rows: usize,
     limits: &Limits,
 ) -> Result<QueryResult> {
-    let mut tx = pool.begin().await?;
+    let mut tx = run_with_timeout(limits, "postgres begin", pool.begin()).await?;
     if read_only {
-        tx.execute(sqlx::query_file!(
-            "sql/postgres/set_transaction_read_only.sql"
-        ))
+        run_with_timeout(
+            limits,
+            "postgres set read only",
+            tx.execute(sqlx::query_file!(
+                "sql/postgres/set_transaction_read_only.sql"
+            )),
+        )
         .await?;
         let result = execute_sql_with_connection(&mut tx, sql, requested_max_rows, limits).await;
         let _ = tx.rollback().await;
         result
     } else {
         let result = execute_sql_with_connection(&mut tx, sql, requested_max_rows, limits).await;
-        tx.commit().await?;
+        run_with_timeout(limits, "postgres commit", tx.commit()).await?;
         result
     }
 }
@@ -36,9 +43,12 @@ pub async fn execute_sql_with_connection(
     requested_max_rows: usize,
     limits: &Limits,
 ) -> Result<QueryResult> {
-    let describe = (&mut *conn)
-        .describe(sqlx::AssertSqlSafe(sql).into_sql_str())
-        .await?;
+    let describe = run_with_timeout(
+        limits,
+        "postgres describe",
+        (&mut *conn).describe(sqlx::AssertSqlSafe(sql).into_sql_str()),
+    )
+    .await?;
     if describe.columns().is_empty() {
         let started = Instant::now();
         let result = tokio::time::timeout(
@@ -63,16 +73,23 @@ pub async fn explain_query(
     sql: &str,
     limits: &Limits,
 ) -> Result<ExplainResultData> {
-    let mut tx = pool.begin().await?;
+    let mut tx = run_with_timeout(limits, "postgres begin", pool.begin()).await?;
     if read_only {
-        tx.execute(sqlx::query_file!(
-            "sql/postgres/set_transaction_read_only.sql"
-        ))
+        run_with_timeout(
+            limits,
+            "postgres set read only",
+            tx.execute(sqlx::query_file!(
+                "sql/postgres/set_transaction_read_only.sql"
+            )),
+        )
         .await?;
     }
-    let rows = sqlx::query(sqlx::AssertSqlSafe(format!("EXPLAIN {sql}")))
-        .fetch_all(&mut *tx)
-        .await?;
+    let rows = run_with_timeout(
+        limits,
+        "postgres explain",
+        sqlx::query(sqlx::AssertSqlSafe(format!("EXPLAIN {sql}"))).fetch_all(&mut *tx),
+    )
+    .await?;
     let mut lines = vec![];
     for row in rows.into_iter().take(limits.explain_max_lines) {
         let line: String = row.try_get::<String, _>(0).unwrap_or_default();

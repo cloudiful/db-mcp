@@ -126,12 +126,15 @@ impl DatabaseConnection for SQLiteConnection {
 
         checks.push(
             timed_probe("metadataSmokeTest", target, || async {
-                sqlx::query(sqlx::AssertSqlSafe(include_str!(
-                    "../../sql/sqlite/metadata_smoke.sql"
-                )))
-                .fetch_one(&self.pool)
-                .await
-                .context("sqlite metadata smoke test")?;
+                run_with_timeout(
+                    &self.limits,
+                    "sqlite metadata smoke test",
+                    sqlx::query(sqlx::AssertSqlSafe(include_str!(
+                        "../../sql/sqlite/metadata_smoke.sql"
+                    )))
+                    .fetch_one(&self.pool),
+                )
+                .await?;
                 Ok(())
             })
             .await,
@@ -142,10 +145,14 @@ impl DatabaseConnection for SQLiteConnection {
     async fn list_schemas(&self, filter: Option<&str>, limit: usize) -> Result<Vec<SchemaInfo>> {
         let filter = filter.unwrap_or("");
         let limit = self.limits.normalize_list_limit(limit);
-        let rows = sqlx::query(sqlx::AssertSqlSafe(include_str!(
-            "../../sql/sqlite/database_list.sql"
-        )))
-        .fetch_all(&self.pool)
+        let rows = run_with_timeout(
+            &self.limits,
+            "sqlite database_list",
+            sqlx::query(sqlx::AssertSqlSafe(include_str!(
+                "../../sql/sqlite/database_list.sql"
+            )))
+            .fetch_all(&self.pool),
+        )
         .await?;
         Ok(rows
             .into_iter()
@@ -172,9 +179,12 @@ impl DatabaseConnection for SQLiteConnection {
             "select name, type from {}.sqlite_master where type in ('table','view') order by name",
             quote_ident(&schema)
         );
-        let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = run_with_timeout(
+            &self.limits,
+            "sqlite list_tables",
+            sqlx::query(sqlx::AssertSqlSafe(sql)).fetch_all(&self.pool),
+        )
+        .await?;
         Ok(rows
             .into_iter()
             .filter_map(|row| {
@@ -209,9 +219,12 @@ impl DatabaseConnection for SQLiteConnection {
                 quote_ident(&schema),
                 quote_string(&table.name)
             );
-            let rows = sqlx::query(sqlx::AssertSqlSafe(pragma))
-                .fetch_all(&self.pool)
-                .await?;
+            let rows = run_with_timeout(
+                &self.limits,
+                "sqlite table_info",
+                sqlx::query(sqlx::AssertSqlSafe(pragma)).fetch_all(&self.pool),
+            )
+            .await?;
             for row in rows {
                 let column: String = row.try_get("name").unwrap_or_default();
                 if !column.to_lowercase().contains(&filter)
@@ -247,9 +260,12 @@ impl DatabaseConnection for SQLiteConnection {
             quote_ident(&schema),
             quote_string(table)
         );
-        let rows = sqlx::query(sqlx::AssertSqlSafe(pragma))
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = run_with_timeout(
+            &self.limits,
+            "sqlite foreign_key_list",
+            sqlx::query(sqlx::AssertSqlSafe(pragma)).fetch_all(&self.pool),
+        )
+        .await?;
         let mut out = vec![];
         for row in rows {
             out.push(ConstraintInfo {
@@ -284,18 +300,25 @@ impl DatabaseConnection for SQLiteConnection {
             quote_ident(&schema),
             quote_string(table)
         );
-        let rows = sqlx::query(sqlx::AssertSqlSafe(pragma))
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = run_with_timeout(
+            &self.limits,
+            "sqlite index_list",
+            sqlx::query(sqlx::AssertSqlSafe(pragma)).fetch_all(&self.pool),
+        )
+        .await?;
         let mut out = vec![];
         for row in rows {
             let name: String = row.try_get("name").unwrap_or_default();
-            let cols = sqlx::query(sqlx::AssertSqlSafe(format!(
-                "pragma {}.index_info({})",
-                quote_ident(&schema),
-                quote_string(&name)
-            )))
-            .fetch_all(&self.pool)
+            let cols = run_with_timeout(
+                &self.limits,
+                "sqlite index_info",
+                sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "pragma {}.index_info({})",
+                    quote_ident(&schema),
+                    quote_string(&name)
+                )))
+                .fetch_all(&self.pool),
+            )
             .await?;
             let columns = cols
                 .into_iter()
@@ -340,9 +363,12 @@ impl DatabaseConnection for SQLiteConnection {
             quote_ident(&schema),
             quote_string(table)
         );
-        let rows = sqlx::query(sqlx::AssertSqlSafe(pragma))
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = run_with_timeout(
+            &self.limits,
+            "sqlite table_info",
+            sqlx::query(sqlx::AssertSqlSafe(pragma)).fetch_all(&self.pool),
+        )
+        .await?;
         Ok(rows
             .into_iter()
             .map(|row| ColumnInfo {
@@ -363,10 +389,14 @@ impl DatabaseConnection for SQLiteConnection {
             "select sql from {}.sqlite_master where name = ?",
             quote_ident(&schema)
         );
-        let ddl: Option<String> = sqlx::query_scalar::<Sqlite, String>(sqlx::AssertSqlSafe(sql))
-            .bind(table)
-            .fetch_optional(&self.pool)
-            .await?;
+        let ddl: Option<String> = run_with_timeout(
+            &self.limits,
+            "sqlite get_table_ddl",
+            sqlx::query_scalar::<Sqlite, String>(sqlx::AssertSqlSafe(sql))
+                .bind(table)
+                .fetch_optional(&self.pool),
+        )
+        .await?;
         Ok(TableDDLInfo {
             schema,
             table: table.to_string(),
@@ -388,9 +418,13 @@ impl DatabaseConnection for SQLiteConnection {
 
     async fn explain_query(&self, sql: &str, limits: &Limits) -> Result<ExplainResultData> {
         let sql = strip_trailing_sql_terminator(sql);
-        let rows = sqlx::query(sqlx::AssertSqlSafe(format!("EXPLAIN QUERY PLAN {sql}")))
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = run_with_timeout(
+            limits,
+            "sqlite explain",
+            sqlx::query(sqlx::AssertSqlSafe(format!("EXPLAIN QUERY PLAN {sql}")))
+                .fetch_all(&self.pool),
+        )
+        .await?;
         let mut lines = vec![];
         for row in rows.into_iter().take(limits.explain_max_lines) {
             let detail: String = row
