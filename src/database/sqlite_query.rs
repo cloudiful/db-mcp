@@ -57,7 +57,16 @@ pub async fn execute_sql_with_connection(
         ));
     }
 
-    collect_rows_with_connection(&mut *conn, sql, requested_max_rows, limits).await
+    let columns = describe
+        .columns()
+        .iter()
+        .take(limits.max_columns)
+        .map(|col| QueryColumn {
+            name: col.name().to_string(),
+            data_type: col.type_info().name().to_string(),
+        })
+        .collect();
+    collect_rows_with_connection(&mut *conn, sql, requested_max_rows, limits, columns).await
 }
 
 async fn collect_rows_with_connection(
@@ -65,31 +74,22 @@ async fn collect_rows_with_connection(
     sql: &str,
     requested_max_rows: usize,
     limits: &Limits,
+    columns: Vec<QueryColumn>,
 ) -> Result<QueryResult> {
     let applied_max_rows = limits.normalize_max_rows(requested_max_rows);
     let started = Instant::now();
     let mut collector = RowCollector::new(applied_max_rows, started);
+    collector.set_columns(columns);
     let mut row_stream = sqlx::query(sqlx::AssertSqlSafe(sql)).fetch(&mut *conn);
+    let deadline = tokio::time::Instant::now() + limits.query_timeout;
 
-    while let Some(row) = tokio::time::timeout(limits.query_timeout, row_stream.try_next())
+    while let Some(row) = tokio::time::timeout_at(deadline, row_stream.try_next())
         .await
         .context("query timeout")??
     {
         if collector.at_row_limit() {
             collector.mark_row_limit();
             break;
-        }
-        if collector.columns().is_empty() {
-            collector.set_columns(
-                row.columns()
-                    .iter()
-                    .take(limits.max_columns)
-                    .map(|col| QueryColumn {
-                        name: col.name().to_string(),
-                        data_type: col.type_info().name().to_string(),
-                    })
-                    .collect(),
-            );
         }
         if collector.push(sqlite_row_to_json(&row)?, limits)? {
             break;

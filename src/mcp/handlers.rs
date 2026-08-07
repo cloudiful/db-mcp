@@ -11,7 +11,7 @@ impl DbMcpService {
         &self,
         input: ListConnectionsInput,
     ) -> Result<CallToolResult> {
-        let refresh = input.refresh.unwrap_or(true);
+        let refresh = input.refresh.unwrap_or(false);
         let health = self.state.manager.health(None, refresh).await?;
         database::call_tool_json(&ListConnectionsOutput {
             connections: health.connections,

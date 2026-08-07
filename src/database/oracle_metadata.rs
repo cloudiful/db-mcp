@@ -304,7 +304,7 @@ pub(super) async fn get_table_ddl(
             quote_literal(table)
         ))
         .await?
-        .unwrap_or_else(|| "TABLE".to_string());
+        .ok_or_else(|| anyhow::anyhow!("table or view {schema}.{table} not found"))?;
     let ddl = conn
         .query_optional_string(&format!(
             "select dbms_metadata.get_ddl({}, {}, {}) from dual",

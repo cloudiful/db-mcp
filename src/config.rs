@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, bail};
+use axum::http::HeaderValue;
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, env, fs, path::PathBuf, time::Duration};
@@ -37,6 +38,7 @@ pub struct ServerConfig {
     pub http_addr: String,
     pub http_path: String,
     pub http_auth: HttpAuthConfig,
+    pub http_cors_allowed_origins: Vec<String>,
 }
 
 impl Default for ServerConfig {
@@ -49,6 +51,7 @@ impl Default for ServerConfig {
             http_addr: "0.0.0.0:8080".to_string(),
             http_path: "/mcp".to_string(),
             http_auth: HttpAuthConfig::default(),
+            http_cors_allowed_origins: vec![],
         }
     }
 }
@@ -179,7 +182,7 @@ impl Config {
             Config::default()
         };
 
-        apply_env(&mut cfg);
+        apply_env(&mut cfg)?;
 
         if let Some(transport) = cli.transport {
             cfg.server.transport = transport;
@@ -284,6 +287,29 @@ impl Config {
             }
         }
 
+        if self.server.http_auth.mode == HttpAuthMode::Bearer {
+            self.server.http_auth.token = self.server.http_auth.token.trim().to_string();
+            if self.server.http_auth.token.is_empty() {
+                bail!("http_auth mode bearer requires a non-empty http_auth token");
+            }
+        }
+        if matches!(
+            self.server.transport,
+            TransportMode::Http | TransportMode::Both
+        ) {
+            let (host, _port) = split_host_port(&self.server.http_addr);
+            if !is_loopback_host(&host) && self.server.http_auth.mode == HttpAuthMode::None {
+                bail!(
+                    "http transport bound to non-loopback address {} requires http_auth mode \"bearer\"; set DBMCP_HTTP_AUTH_MODE=bearer and DBMCP_HTTP_AUTH_TOKEN",
+                    self.server.http_addr
+                );
+            }
+        }
+        for origin in &self.server.http_cors_allowed_origins {
+            HeaderValue::from_str(origin)
+                .with_context(|| format!("invalid http_cors_allowed_origins entry {origin:?}"))?;
+        }
+
         Ok(())
     }
 
@@ -315,7 +341,33 @@ pub fn normalize_listen_addr(addr: &str) -> String {
     }
 }
 
-fn apply_env(cfg: &mut Config) {
+/// Split a normalized `host:port` address, stripping IPv6 brackets from the host.
+pub(crate) fn split_host_port(addr: &str) -> (String, String) {
+    let addr = normalize_listen_addr(addr);
+    match addr.rsplit_once(':') {
+        Some((host, port)) => (host.trim_matches(['[', ']']).to_string(), port.to_string()),
+        None => (addr, String::new()),
+    }
+}
+
+/// Whether `host` is a loopback address where unauthenticated HTTP is acceptable.
+pub(crate) fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host == "127.0.0.1"
+        || host == "::1"
+        || host.starts_with("127.")
+        || host.starts_with("::ffff:127.")
+}
+
+fn parse_auth_mode(value: &str) -> Result<HttpAuthMode> {
+    match value.to_lowercase().as_str() {
+        "none" => Ok(HttpAuthMode::None),
+        "bearer" => Ok(HttpAuthMode::Bearer),
+        other => bail!("invalid http_auth mode {other:?}; expected \"none\" or \"bearer\""),
+    }
+}
+
+fn apply_env(cfg: &mut Config) -> Result<()> {
     if let Some(parsed) = env::var("DBMCP_DEBUG").ok().and_then(|v| v.parse().ok()) {
         cfg.server.debug = parsed;
     }
@@ -332,13 +384,18 @@ fn apply_env(cfg: &mut Config) {
         cfg.server.http_path = v;
     }
     if let Ok(v) = env::var("DBMCP_HTTP_AUTH_MODE") {
-        cfg.server.http_auth.mode = match v.to_lowercase().as_str() {
-            "bearer" => HttpAuthMode::Bearer,
-            _ => HttpAuthMode::None,
-        };
+        cfg.server.http_auth.mode = parse_auth_mode(&v)?;
     }
     if let Ok(v) = env::var("DBMCP_HTTP_AUTH_TOKEN") {
         cfg.server.http_auth.token = v;
+    }
+    if let Ok(v) = env::var("DBMCP_HTTP_CORS_ALLOWED_ORIGINS") {
+        cfg.server.http_cors_allowed_origins = v
+            .split(',')
+            .map(str::trim)
+            .filter(|origin| !origin.is_empty())
+            .map(str::to_string)
+            .collect();
     }
 
     let env_connections = load_env_connections();
@@ -355,6 +412,7 @@ fn apply_env(cfg: &mut Config) {
         }
         cfg.connections = by_name.into_values().collect();
     }
+    Ok(())
 }
 
 fn parse_transport(value: &str) -> Result<TransportMode> {
@@ -425,7 +483,37 @@ fn load_env_connections() -> Vec<ConnectionConfig> {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_listen_addr;
+    use super::*;
+
+    fn http_config(
+        transport: TransportMode,
+        mode: HttpAuthMode,
+        token: &str,
+        addr: &str,
+    ) -> Config {
+        Config {
+            server: ServerConfig {
+                transport,
+                http_addr: addr.to_string(),
+                http_auth: HttpAuthConfig {
+                    mode,
+                    token: token.to_string(),
+                },
+                ..ServerConfig::default()
+            },
+            limits: LimitsConfig::default(),
+            connections: vec![ConnectionConfig {
+                name: "sqlite".to_string(),
+                driver: "sqlite".to_string(),
+                sqlite: Some(SQLiteConfig {
+                    dsn: "sqlite::memory:".to_string(),
+                    read_only: true,
+                }),
+                postgres: None,
+                oracle: None,
+            }],
+        }
+    }
 
     #[test]
     fn keeps_full_host_port_address() {
@@ -446,5 +534,75 @@ mod tests {
     #[test]
     fn keeps_address_without_port() {
         assert_eq!(normalize_listen_addr("localhost"), "localhost");
+    }
+
+    #[test]
+    fn http_transport_on_non_loopback_requires_auth() {
+        let mut cfg = http_config(TransportMode::Http, HttpAuthMode::None, "", "0.0.0.0:8080");
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn http_transport_on_loopback_without_auth_is_allowed() {
+        let mut cfg = http_config(
+            TransportMode::Http,
+            HttpAuthMode::None,
+            "",
+            "127.0.0.1:8080",
+        );
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn stdio_transport_does_not_require_http_auth() {
+        let mut cfg = http_config(TransportMode::Stdio, HttpAuthMode::None, "", "0.0.0.0:8080");
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn bearer_auth_requires_non_empty_token() {
+        let mut cfg = http_config(
+            TransportMode::Http,
+            HttpAuthMode::Bearer,
+            "",
+            "127.0.0.1:8080",
+        );
+        assert!(cfg.validate().is_err());
+        cfg.server.http_auth.token = "secret".to_string();
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn bearer_token_is_trimmed_at_validation() {
+        let mut cfg = http_config(
+            TransportMode::Http,
+            HttpAuthMode::Bearer,
+            "  secret  ",
+            "127.0.0.1:8080",
+        );
+        cfg.validate().expect("valid bearer config");
+        assert_eq!(cfg.server.http_auth.token, "secret");
+    }
+
+    #[test]
+    fn cors_origins_are_validated() {
+        let mut cfg = http_config(
+            TransportMode::Http,
+            HttpAuthMode::Bearer,
+            "t",
+            "127.0.0.1:8080",
+        );
+        cfg.server.http_cors_allowed_origins = vec!["https://example.com".to_string()];
+        assert!(cfg.validate().is_ok());
+        cfg.server.http_cors_allowed_origins = vec!["https://exa\u{1}mple".to_string()];
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn parse_auth_mode_errors_on_unknown_values() {
+        assert!(parse_auth_mode("bearer").is_ok());
+        assert!(parse_auth_mode("none").is_ok());
+        assert!(parse_auth_mode("beare").is_err());
+        assert!(parse_auth_mode("basic").is_err());
     }
 }

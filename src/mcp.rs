@@ -473,7 +473,9 @@ pub async fn bearer_auth(
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
     {
-        Some(value) if value.trim() == expected => next.run(request).await,
+        Some(value) if constant_time_eq(value.trim().as_bytes(), expected.as_bytes()) => {
+            next.run(request).await
+        }
         _ => {
             let mut response =
                 axum::response::Response::new(axum::body::Body::from("unauthorized"));
@@ -485,6 +487,19 @@ pub async fn bearer_auth(
             response
         }
     }
+}
+
+/// Content comparison that does not short-circuit on the first differing byte,
+/// avoiding token timing side channels; length differences fold into the diff.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    let max_len = a.len().max(b.len());
+    let mut diff = a.len() ^ b.len();
+    for i in 0..max_len {
+        let x = a.get(i).copied().unwrap_or(0);
+        let y = b.get(i).copied().unwrap_or(0);
+        diff |= (x ^ y) as usize;
+    }
+    diff == 0
 }
 
 #[cfg(test)]
@@ -616,6 +631,16 @@ mod tests {
         );
         assert!(properties.contains_key("schema"));
         assert!(properties.contains_key("limit"));
+    }
+
+    #[test]
+    fn constant_time_eq_distinguishes_equal_and_unequal_bytes() {
+        assert!(constant_time_eq(b"secret", b"secret"));
+        assert!(constant_time_eq(b"", b""));
+        assert!(!constant_time_eq(b"secret", b"secrex"));
+        assert!(!constant_time_eq(b"secret", b"secret-longer"));
+        assert!(!constant_time_eq(b"", b"a"));
+        assert!(!constant_time_eq(b"Bearer x", b"Bearer y"));
     }
 
     async fn test_state() -> Arc<AppState> {

@@ -11,7 +11,7 @@ use super::oracle::OracleConnection;
 use super::unavailable::FailedConnection;
 use super::{
     ConnectionDiagnostic, ConnectionHealth, ConnectionInfo, DatabaseConnection, HealthSnapshot,
-    Limits, chrono_like_now, postgres, sqlite,
+    Limits, chrono_like_now, postgres, sqlite, sqlite_dsn_is_read_only,
 };
 
 #[derive(Clone)]
@@ -38,6 +38,18 @@ impl Manager {
                         "database connection initialized name={} driver={} target={}",
                         conn_cfg.name, conn_cfg.driver, target
                     );
+                    if conn_cfg.driver == "sqlite"
+                        && conn_cfg
+                            .sqlite
+                            .as_ref()
+                            .is_some_and(|cfg| cfg.read_only && !sqlite_dsn_is_read_only(&cfg.dsn))
+                    {
+                        let cfg = conn_cfg.sqlite.as_ref().expect("sqlite config present");
+                        warn!(
+                            "sqlite connection name={} readOnly=true but dsn={} allows writes; execute_query can still write (enforce with a mode=ro or immutable=1 dsn)",
+                            conn_cfg.name, cfg.dsn
+                        );
+                    }
                     conn
                 }
                 Err(err) => {
@@ -155,10 +167,10 @@ impl Manager {
         Ok(futures_util::future::join_all(tasks).await)
     }
 
-    async fn refresh_all(&self) {
+    pub(crate) async fn refresh_all(&self) {
         let mut tasks = vec![];
         for slot in self.slots.values() {
-            tasks.push(Self::refresh_slot(slot.clone()));
+            tasks.push(Self::refresh_slot(slot.clone(), &self.limits));
         }
         futures_util::future::join_all(tasks).await;
     }
@@ -169,13 +181,36 @@ impl Manager {
             .get(name)
             .with_context(|| format!("connection {name:?} not found"))?
             .clone();
-        Self::refresh_slot(slot).await;
+        Self::refresh_slot(slot, &self.limits).await;
         Ok(())
     }
 
-    async fn refresh_slot(slot: Slot) {
+    async fn refresh_slot(slot: Slot, limits: &Limits) {
         let now = chrono_like_now();
-        let diagnostic = slot.conn.diagnose(false).await;
+        // Bound the whole probe, not just each stage, so a pathological
+        // connection cannot stall startup or the background refresh forever.
+        // Every backend's diagnostic chain runs at most 4 stages, each already
+        // bounded by query_timeout, so the total budget covers the worst-case
+        // legitimate chain and only trips when a stage exceeds its own timeout.
+        let budget = limits.query_timeout.saturating_mul(4);
+        let diagnostic = match tokio::time::timeout(budget, slot.conn.diagnose(false)).await {
+            Ok(diagnostic) => diagnostic,
+            Err(_) => {
+                let info = slot.conn.info();
+                let message = format!("connection probe exceeded the total budget {budget:?}");
+                ConnectionDiagnostic {
+                    name: info.name,
+                    driver: info.driver,
+                    default_schema: info.default_schema,
+                    status: "down".to_string(),
+                    available: false,
+                    failure_phase: Some("timeout".to_string()),
+                    last_error: Some(message.clone()),
+                    last_error_chain: vec![message],
+                    checks: vec![],
+                }
+            }
+        };
         let mut health = slot.health.lock().expect("health poisoned");
         health.last_checked_at = Some(now.clone());
         health.default_schema = diagnostic.default_schema;

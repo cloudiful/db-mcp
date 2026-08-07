@@ -40,18 +40,12 @@ pub(super) async fn explain_query(
     sql: &str,
     limits: &Limits,
 ) -> Result<ExplainResultData> {
+    // EXPLAIN PLAN writes rows to PLAN_TABLE, so it cannot run inside a
+    // read-only transaction; run it in a plain transaction and roll back so
+    // the plan table rows never persist.
     let explain_sql = format!("explain plan for {sql}");
     let conn = db.connect().await?;
     let binds: Vec<OracleValue> = vec![];
-    if db.config.read_only {
-        tokio::time::timeout(
-            db.limits.query_timeout,
-            conn.execute("set transaction read only", &binds),
-        )
-        .await
-        .context("oracle read-only transaction timeout")?
-        .context("oracle read-only transaction failed")?;
-    }
     tokio::time::timeout(db.limits.query_timeout, conn.execute(&explain_sql, &binds))
         .await
         .context("oracle explain timeout")?
@@ -68,15 +62,24 @@ pub(super) async fn explain_query(
     .context("oracle dbms_xplan failed")?;
     let _ = conn.rollback().await;
     let _ = conn.close().await;
+    let mut lines = vec![];
+    let mut total_chars = 0usize;
+    let mut truncated = false;
+    for row in plan.rows.iter().take(limits.explain_max_lines) {
+        let Some(line) = row.get(0).and_then(value_to_string) else {
+            continue;
+        };
+        total_chars += line.chars().count();
+        if total_chars > limits.explain_max_total_chars {
+            truncated = true;
+            break;
+        }
+        lines.push(line);
+    }
     Ok(ExplainResultData {
         format: "text".to_string(),
-        plan_lines: plan
-            .rows
-            .iter()
-            .take(limits.explain_max_lines)
-            .filter_map(|row| row.get(0).and_then(value_to_string))
-            .collect(),
-        notice: None,
+        plan_lines: lines,
+        notice: truncated.then(|| "explain output truncated to protect MCP context".to_string()),
     })
 }
 

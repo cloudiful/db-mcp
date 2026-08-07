@@ -426,16 +426,24 @@ impl DatabaseConnection for SQLiteConnection {
         )
         .await?;
         let mut lines = vec![];
+        let mut total_chars = 0usize;
+        let mut truncated = false;
         for row in rows.into_iter().take(limits.explain_max_lines) {
             let detail: String = row
                 .try_get("detail")
                 .unwrap_or_else(|_| row.try_get(3).unwrap_or_default());
+            total_chars += detail.chars().count();
+            if total_chars > limits.explain_max_total_chars {
+                truncated = true;
+                break;
+            }
             lines.push(detail);
         }
         Ok(ExplainResultData {
             format: "text".to_string(),
             plan_lines: lines,
-            notice: None,
+            notice: truncated
+                .then(|| "explain output truncated to protect MCP context".to_string()),
         })
     }
 }

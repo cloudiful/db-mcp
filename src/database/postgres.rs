@@ -443,10 +443,9 @@ impl DatabaseConnection for PostgresConnection {
             sqlx::query_file_scalar!("sql/postgres/get_table_type.sql", &schema, table)
                 .fetch_one(&self.pool),
         )
-        .await
-        .ok()
-        .flatten();
-        let object_type = object_type.unwrap_or_else(|| "TABLE".to_string());
+        .await?;
+        let object_type = object_type
+            .ok_or_else(|| anyhow::anyhow!("table or view {schema}.{table} not found"))?;
         let ddl: String = if object_type == "VIEW" {
             run_with_timeout(
                 &self.limits,

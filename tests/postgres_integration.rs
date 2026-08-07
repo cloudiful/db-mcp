@@ -3,47 +3,51 @@ use db_mcp::{
     database::Manager,
 };
 
-fn postgres_dsn() -> String {
-    std::env::var("DBMCP_TEST_POSTGRES_DSN").unwrap_or_else(|_| {
-        "postgres://postgres:wEMSQSDn4sVGEZT3KSv6@localhost:5432/postgres".to_string()
-    })
+fn postgres_dsn() -> Option<String> {
+    std::env::var("DBMCP_TEST_POSTGRES_DSN").ok()
 }
 
-fn test_config() -> Config {
-    Config {
+fn test_config() -> Option<Config> {
+    let dsn = postgres_dsn()?;
+    Some(Config {
         server: ServerConfig::default(),
         limits: LimitsConfig::default(),
         connections: vec![ConnectionConfig {
             name: "postgres".to_string(),
             driver: "postgres".to_string(),
             postgres: Some(PostgresConfig {
-                dsn: postgres_dsn(),
+                dsn,
                 schema: "public".to_string(),
                 read_only: true,
             }),
             oracle: None,
             sqlite: None,
         }],
-    }
+    })
 }
 
-fn test_config_without_schema() -> Config {
-    let mut cfg = test_config();
+fn test_config_without_schema() -> Option<Config> {
+    let mut cfg = test_config()?;
     cfg.connections[0].postgres.as_mut().unwrap().schema.clear();
-    cfg
+    Some(cfg)
 }
 
-fn write_enabled_test_config() -> Config {
-    let mut cfg = test_config();
+fn write_enabled_test_config() -> Option<Config> {
+    let mut cfg = test_config()?;
     cfg.connections[0].postgres.as_mut().unwrap().read_only = false;
-    cfg
+    Some(cfg)
 }
+
+const SKIP_MESSAGE: &str = "skipping postgres integration test; DBMCP_TEST_POSTGRES_DSN not set";
 
 #[tokio::test]
 async fn postgres_manager_health_is_up() {
-    let cfg = test_config();
+    let Some(cfg) = test_config() else {
+        eprintln!("{SKIP_MESSAGE}");
+        return;
+    };
     let manager = Manager::new(&cfg).await.expect("manager init");
-    let health = manager.health(None, true).await.expect("health");
+    let health = manager.health(None, false).await.expect("health");
 
     assert_eq!(health.connections.len(), 1);
     assert!(
@@ -55,9 +59,12 @@ async fn postgres_manager_health_is_up() {
 
 #[tokio::test]
 async fn postgres_manager_health_is_up_without_configured_schema() {
-    let cfg = test_config_without_schema();
+    let Some(cfg) = test_config_without_schema() else {
+        eprintln!("{SKIP_MESSAGE}");
+        return;
+    };
     let manager = Manager::new(&cfg).await.expect("manager init");
-    let health = manager.health(None, true).await.expect("health");
+    let health = manager.health(None, false).await.expect("health");
 
     assert!(
         health.connections[0].available,
@@ -68,7 +75,10 @@ async fn postgres_manager_health_is_up_without_configured_schema() {
 
 #[tokio::test]
 async fn postgres_diagnostics_include_probe_checks() {
-    let cfg = test_config();
+    let Some(cfg) = test_config() else {
+        eprintln!("{SKIP_MESSAGE}");
+        return;
+    };
     let manager = Manager::new(&cfg).await.expect("manager init");
     let diagnostics = manager
         .diagnose(Some("postgres"), true)
@@ -87,7 +97,10 @@ async fn postgres_diagnostics_include_probe_checks() {
 
 #[tokio::test]
 async fn postgres_can_list_schemas_and_run_select() {
-    let cfg = test_config();
+    let Some(cfg) = test_config() else {
+        eprintln!("{SKIP_MESSAGE}");
+        return;
+    };
     let manager = Manager::new(&cfg).await.expect("manager init");
     let conn = manager.connection(Some("postgres")).expect("connection");
 
@@ -110,7 +123,10 @@ async fn postgres_can_list_schemas_and_run_select() {
 
 #[tokio::test]
 async fn postgres_execute_query_accepts_trailing_semicolon() {
-    let cfg = test_config();
+    let Some(cfg) = test_config() else {
+        eprintln!("{SKIP_MESSAGE}");
+        return;
+    };
     let manager = Manager::new(&cfg).await.expect("manager init");
     let conn = manager.connection(Some("postgres")).expect("connection");
 
@@ -127,8 +143,55 @@ async fn postgres_execute_query_accepts_trailing_semicolon() {
 }
 
 #[tokio::test]
+async fn postgres_execute_query_accepts_trailing_comment() {
+    let Some(cfg) = test_config() else {
+        eprintln!("{SKIP_MESSAGE}");
+        return;
+    };
+    let manager = Manager::new(&cfg).await.expect("manager init");
+    let conn = manager.connection(Some("postgres")).expect("connection");
+
+    let result = conn
+        .execute_query(
+            "select 1 as value -- trailing comment",
+            10,
+            manager.limits(),
+        )
+        .await
+        .expect("execute_query should tolerate a trailing comment");
+
+    assert_eq!(result.row_count, 1);
+    assert_eq!(
+        result.rows[0].get("value").and_then(|value| value.as_i64()),
+        Some(1)
+    );
+}
+
+#[tokio::test]
+async fn postgres_empty_result_set_keeps_column_names() {
+    let Some(cfg) = test_config() else {
+        eprintln!("{SKIP_MESSAGE}");
+        return;
+    };
+    let manager = Manager::new(&cfg).await.expect("manager init");
+    let conn = manager.connection(Some("postgres")).expect("connection");
+
+    let result = conn
+        .execute_query("select 1 as value where false", 10, manager.limits())
+        .await
+        .expect("execute_query");
+
+    assert_eq!(result.row_count, 0);
+    assert_eq!(result.columns.len(), 1);
+    assert_eq!(result.columns[0].name, "value");
+}
+
+#[tokio::test]
 async fn postgres_read_only_connection_supports_sequential_batch_queries() {
-    let cfg = test_config();
+    let Some(cfg) = test_config() else {
+        eprintln!("{SKIP_MESSAGE}");
+        return;
+    };
     let manager = Manager::new(&cfg).await.expect("manager init");
     let conn = manager.connection(Some("postgres")).expect("connection");
 
@@ -154,7 +217,10 @@ async fn postgres_read_only_connection_supports_sequential_batch_queries() {
 
 #[tokio::test]
 async fn postgres_explain_query_accepts_trailing_semicolon() {
-    let cfg = test_config();
+    let Some(cfg) = test_config() else {
+        eprintln!("{SKIP_MESSAGE}");
+        return;
+    };
     let manager = Manager::new(&cfg).await.expect("manager init");
     let conn = manager.connection(Some("postgres")).expect("connection");
 
@@ -168,7 +234,10 @@ async fn postgres_explain_query_accepts_trailing_semicolon() {
 
 #[tokio::test]
 async fn postgres_execute_query_serializes_uuid_columns() {
-    let cfg = test_config();
+    let Some(cfg) = test_config() else {
+        eprintln!("{SKIP_MESSAGE}");
+        return;
+    };
     let manager = Manager::new(&cfg).await.expect("manager init");
     let conn = manager.connection(Some("postgres")).expect("connection");
 
@@ -192,7 +261,10 @@ async fn postgres_execute_query_serializes_uuid_columns() {
 
 #[tokio::test]
 async fn postgres_read_only_transactions_reject_writes() {
-    let cfg = test_config();
+    let Some(cfg) = test_config() else {
+        eprintln!("{SKIP_MESSAGE}");
+        return;
+    };
     let manager = Manager::new(&cfg).await.expect("manager init");
     let conn = manager.connection(Some("postgres")).expect("connection");
 
@@ -216,7 +288,10 @@ async fn postgres_read_only_transactions_reject_writes() {
 
 #[tokio::test]
 async fn postgres_can_disable_read_only_transactions() {
-    let cfg = write_enabled_test_config();
+    let Some(cfg) = write_enabled_test_config() else {
+        eprintln!("{SKIP_MESSAGE}");
+        return;
+    };
     let manager = Manager::new(&cfg).await.expect("manager init");
     let conn = manager.connection(Some("postgres")).expect("connection");
 

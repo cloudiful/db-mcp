@@ -3,7 +3,7 @@ use axum::{Json, Router, middleware, routing::get};
 use std::env;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{Any, CorsLayer};
 use tracing::{info, warn};
 
 use crate::runtime::mcp_transport as transport;
@@ -34,6 +34,28 @@ pub async fn run(cli: config::Cli) -> Result<()> {
     }
 }
 
+const HEALTH_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Periodically refresh the cached connection health so `/readyz` and
+/// `list_connections` (which serve cached state) do not stay frozen on the
+/// startup snapshot. Ticks are skipped while a refresh is still in flight.
+async fn background_refresh(manager: database::Manager, ct: CancellationToken) {
+    let in_flight = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut interval = tokio::time::interval(HEALTH_REFRESH_INTERVAL);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            _ = ct.cancelled() => break,
+            _ = interval.tick() => {
+                if !in_flight.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    manager.refresh_all().await;
+                    in_flight.store(false, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+        }
+    }
+}
+
 async fn run_stdio(state: Arc<mcp::AppState>) -> Result<()> {
     transport::serve_stdio(mcp::DbMcpService::new(state)).await
 }
@@ -41,13 +63,19 @@ async fn run_stdio(state: Arc<mcp::AppState>) -> Result<()> {
 async fn run_http(state: Arc<mcp::AppState>) -> Result<()> {
     let ct = CancellationToken::new();
     let addr = state.cfg.server.http_addr.clone();
-    let app = build_router(state);
+    let app = build_router(state.clone());
+    let refresh_task = tokio::spawn(background_refresh(state.manager.clone(), ct.child_token()));
     let mut http_task = tokio::spawn(transport::serve_http(app, addr, ct.child_token()));
     tokio::select! {
-        res = &mut http_task => res.context("join http task")??,
+        res = &mut http_task => {
+            ct.cancel();
+            let _ = refresh_task.await;
+            res.context("join http task")??;
+        }
         _ = tokio::signal::ctrl_c() => {
             warn!("shutdown requested");
             ct.cancel();
+            let _ = refresh_task.await;
             let _ = http_task.await;
         }
     }
@@ -58,19 +86,26 @@ async fn run_both(state: Arc<mcp::AppState>) -> Result<()> {
     let ct = CancellationToken::new();
     let addr = state.cfg.server.http_addr.clone();
     let app = build_router(state.clone());
+    let refresh_task = tokio::spawn(background_refresh(state.manager.clone(), ct.child_token()));
     let mut http_task = tokio::spawn(transport::serve_http(app, addr, ct.child_token()));
     let mut stdio_task = tokio::spawn(transport::serve_stdio(mcp::DbMcpService::new(state)));
 
     tokio::select! {
-        res = &mut http_task => res.context("join http task")??,
+        res = &mut http_task => {
+            ct.cancel();
+            let _ = refresh_task.await;
+            res.context("join http task")??;
+        }
         res = &mut stdio_task => {
             ct.cancel();
+            let _ = refresh_task.await;
             let _ = http_task.await;
             res.context("join stdio task")??;
         }
         _ = tokio::signal::ctrl_c() => {
             warn!("shutdown requested");
             ct.cancel();
+            let _ = refresh_task.await;
             let _ = http_task.await;
             let _ = stdio_task.await;
         }
@@ -92,7 +127,7 @@ fn build_router(state: Arc<mcp::AppState>) -> Router {
         mcp_router
     };
 
-    Router::new()
+    let mut router = Router::new()
         .route("/healthz", get(healthz))
         .route(
             "/readyz",
@@ -101,8 +136,26 @@ fn build_router(state: Arc<mcp::AppState>) -> Router {
                 move || readyz(state.clone())
             }),
         )
-        .merge(mcp_router)
-        .layer(CorsLayer::permissive())
+        .merge(mcp_router);
+    if !state.cfg.server.http_cors_allowed_origins.is_empty() {
+        let origins: Vec<axum::http::HeaderValue> = state
+            .cfg
+            .server
+            .http_cors_allowed_origins
+            .iter()
+            .map(|origin| {
+                axum::http::HeaderValue::from_str(origin)
+                    .expect("validated http_cors_allowed_origins")
+            })
+            .collect();
+        router = router.layer(
+            CorsLayer::new()
+                .allow_origin(origins)
+                .allow_methods(Any)
+                .allow_headers(Any),
+        );
+    }
+    router
 }
 
 fn mcp_service_factory(
@@ -121,7 +174,9 @@ async fn readyz(
     (axum::http::StatusCode, Json<database::HealthSnapshot>),
     (axum::http::StatusCode, String),
 > {
-    match state.manager.health(None, true).await {
+    // Serve the cached probe state instead of re-probing every connection on
+    // every request; use diagnose_connection for on-demand deep checks.
+    match state.manager.health(None, false).await {
         Ok(snapshot) => {
             let code = if snapshot.status == "down" {
                 axum::http::StatusCode::SERVICE_UNAVAILABLE
@@ -170,26 +225,18 @@ fn log_startup(cfg: &config::Config, manager: &database::Manager) {
         cfg.server.transport,
         config::TransportMode::Http | config::TransportMode::Both
     ) {
-        let (host, port) = split_listen_addr(&cfg.server.http_addr);
+        let (host, port) = config::split_host_port(&cfg.server.http_addr);
         info!(
             "http MCP listening host={} port={} path={} healthz=/healthz readyz=/readyz",
             host, port, cfg.server.http_path
         );
-        if !matches!(host.as_str(), "127.0.0.1" | "::1" | "localhost")
+        if !config::is_loopback_host(&host)
             && cfg.server.http_auth.mode == config::HttpAuthMode::None
         {
             warn!(
-                "http MCP exposed on {host}:{port} without authentication; any client that can reach it (including arbitrary web pages via permissive CORS) can invoke database tools"
+                "http MCP exposed on {host}:{port} without authentication; any client that can reach it can invoke database tools"
             );
         }
-    }
-}
-
-fn split_listen_addr(addr: &str) -> (String, String) {
-    let addr = config::normalize_listen_addr(addr);
-    match addr.rsplit_once(':') {
-        Some((host, port)) => (host.to_string(), port.to_string()),
-        None => (addr, String::new()),
     }
 }
 
@@ -197,4 +244,109 @@ fn debug_requested() -> bool {
     env::var("DBMCP_DEBUG")
         .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode, header::AUTHORIZATION};
+    use tower::ServiceExt;
+
+    async fn test_state(auth_token: Option<&str>) -> Arc<mcp::AppState> {
+        let cfg = config::Config {
+            server: config::ServerConfig {
+                http_auth: config::HttpAuthConfig {
+                    mode: if auth_token.is_some() {
+                        config::HttpAuthMode::Bearer
+                    } else {
+                        config::HttpAuthMode::None
+                    },
+                    token: auth_token.unwrap_or("").to_string(),
+                },
+                ..config::ServerConfig::default()
+            },
+            limits: config::LimitsConfig::default(),
+            connections: vec![config::ConnectionConfig {
+                name: "sqlite".to_string(),
+                driver: "sqlite".to_string(),
+                sqlite: Some(config::SQLiteConfig {
+                    dsn: "sqlite::memory:".to_string(),
+                    read_only: true,
+                }),
+                postgres: None,
+                oracle: None,
+            }],
+        };
+        let manager = database::Manager::new(&cfg).await.expect("manager");
+        Arc::new(mcp::AppState { cfg, manager })
+    }
+
+    #[tokio::test]
+    async fn healthz_is_not_authenticated() {
+        let app = build_router(test_state(Some("secret-token")).await);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/healthz")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("healthz response");
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn bearer_auth_rejects_unauthenticated_mcp_requests() {
+        let app = build_router(test_state(Some("secret-token")).await);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("mcp response");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert!(
+            response.headers().contains_key("www-authenticate"),
+            "401 must carry a WWW-Authenticate challenge"
+        );
+    }
+
+    #[tokio::test]
+    async fn bearer_auth_allows_valid_token() {
+        let app = build_router(test_state(Some("secret-token")).await);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header(AUTHORIZATION, "Bearer secret-token")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("mcp response");
+        assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn without_auth_mode_mcp_requests_are_not_authenticated() {
+        let app = build_router(test_state(None).await);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("mcp response");
+        assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
+    }
 }
