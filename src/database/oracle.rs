@@ -32,7 +32,7 @@ impl OracleConnection {
         })
     }
 
-    pub(super) async fn connect(&self) -> Result<Connection> {
+    pub(super) async fn connect_within(&self, deadline: &Deadline) -> Result<Connection> {
         let mut cfg = match &self.spec.service {
             OracleService::ServiceName(service) => OracleRsConfig::new(
                 &self.spec.host,
@@ -50,38 +50,52 @@ impl OracleConnection {
             ),
         };
         cfg = cfg.connect_timeout(self.limits.query_timeout);
-        tokio::time::timeout(
-            self.limits.query_timeout,
-            Connection::connect_with_config(cfg),
-        )
-        .await
-        .with_context(|| {
-            format!(
-                "oracle connect timeout name={} target={}",
-                self.name, self.spec.target
+        deadline
+            .run(
+                Operation::Connect,
+                &format!(
+                    "oracle connect name={} target={}",
+                    self.name, self.spec.target
+                ),
+                Connection::connect_with_config(cfg),
             )
-        })?
-        .with_context(|| {
-            format!(
-                "oracle connect failed name={} target={}",
-                self.name, self.spec.target
-            )
-        })
+            .await
     }
 
     pub(super) async fn query(&self, sql: &str) -> Result<oracle_rs::QueryResult> {
-        let conn = self.connect().await?;
+        let deadline = self.limits.deadline();
+        self.query_within(sql, &deadline).await
+    }
+
+    pub(super) async fn query_within(
+        &self,
+        sql: &str,
+        deadline: &Deadline,
+    ) -> Result<oracle_rs::QueryResult> {
+        let conn = self.connect_within(deadline).await?;
         let binds: Vec<OracleValue> = vec![];
-        let result = tokio::time::timeout(self.limits.query_timeout, conn.query(sql, &binds))
-            .await
-            .with_context(|| format!("oracle query timeout name={}", self.name))?
-            .with_context(|| format!("oracle query failed name={}", self.name))?;
-        let _ = conn.close().await;
-        Ok(result)
+        let result = deadline
+            .run(
+                Operation::Query,
+                &format!("oracle query name={}", self.name),
+                conn.query(sql, &binds),
+            )
+            .await;
+        close_connection(&conn, deadline).await;
+        result
     }
 
     pub(super) async fn query_optional_string(&self, sql: &str) -> Result<Option<String>> {
-        let result = self.query(sql).await?;
+        let deadline = self.limits.deadline();
+        self.query_optional_string_within(sql, &deadline).await
+    }
+
+    pub(super) async fn query_optional_string_within(
+        &self,
+        sql: &str,
+        deadline: &Deadline,
+    ) -> Result<Option<String>> {
+        let result = self.query_within(sql, deadline).await?;
         Ok(result
             .rows
             .first()
@@ -96,9 +110,12 @@ impl OracleConnection {
             .clone()
     }
 
-    pub(super) async fn refresh_schema(&self) -> Result<()> {
+    pub(super) async fn refresh_schema_within(&self, deadline: &Deadline) -> Result<()> {
         let schema = self
-            .query_optional_string("select sys_context('USERENV', 'CURRENT_SCHEMA') from dual")
+            .query_optional_string_within(
+                "select sys_context('USERENV', 'CURRENT_SCHEMA') from dual",
+                deadline,
+            )
             .await
             .context("oracle current schema")?
             .unwrap_or_else(|| self.config.username.trim().to_uppercase());
@@ -108,6 +125,13 @@ impl OracleConnection {
             .expect("default_schema poisoned") = schema.to_uppercase();
         Ok(())
     }
+}
+
+/// Best-effort bounded close for a dedicated Oracle session. Sessions are not
+/// pooled, so an unconfirmed state cannot leak into a shared connection.
+async fn close_connection(conn: &Connection, deadline: &Deadline) {
+    let budget = deadline.remaining().max(CLEANUP_TIMEOUT);
+    let _ = tokio::time::timeout(budget, conn.close()).await;
 }
 
 #[async_trait::async_trait]
@@ -141,13 +165,15 @@ impl DatabaseConnection for OracleConnection {
     }
 
     async fn ping(&self) -> Result<()> {
-        self.query("select 1 from dual").await?;
-        self.refresh_schema().await?;
+        let deadline = self.limits.deadline();
+        self.query_within("select 1 from dual", &deadline).await?;
+        self.refresh_schema_within(&deadline).await?;
         Ok(())
     }
 
     async fn diagnose(&self, deep: bool) -> ConnectionDiagnostic {
         let target = self.target_summary();
+        let deadline = self.limits.probe_deadline();
         let mut checks = vec![
             timed_probe("config", target.clone(), || async {
                 parse_oracle_jdbc_url(&self.config).map(|_| ())
@@ -160,8 +186,8 @@ impl DatabaseConnection for OracleConnection {
 
         checks.push(
             timed_probe("connect/acquire", target.clone(), || async {
-                let conn = self.connect().await?;
-                let _ = conn.close().await;
+                let conn = self.connect_within(&deadline).await?;
+                close_connection(&conn, &deadline).await;
                 Ok(())
             })
             .await,
@@ -172,7 +198,9 @@ impl DatabaseConnection for OracleConnection {
 
         checks.push(
             timed_probe("pingQuery", target.clone(), || async {
-                self.query("select 1 from dual").await.map(|_| ())
+                self.query_within("select 1 from dual", &deadline)
+                    .await
+                    .map(|_| ())
             })
             .await,
         );
@@ -182,7 +210,7 @@ impl DatabaseConnection for OracleConnection {
 
         checks.push(
             timed_probe("defaultSchema", target.clone(), || async {
-                self.refresh_schema()
+                self.refresh_schema_within(&deadline)
                     .await
                     .context("refresh oracle default schema")
             })
@@ -194,7 +222,7 @@ impl DatabaseConnection for OracleConnection {
 
         checks.push(
             timed_probe("metadataSmokeTest", target, || async {
-                self.query("select count(*) from all_users")
+                self.query_within("select count(*) from all_users", &deadline)
                     .await
                     .map(|_| ())
             })
@@ -267,6 +295,17 @@ impl DatabaseConnection for OracleConnection {
     ) -> Result<QueryResult> {
         let sql = strip_trailing_sql_terminator(sql);
         oracle_query::execute_query(self, sql, max_rows, limits).await
+    }
+
+    async fn execute_query_within(
+        &self,
+        sql: &str,
+        max_rows: usize,
+        limits: &Limits,
+        deadline: Deadline,
+    ) -> Result<QueryResult> {
+        let sql = strip_trailing_sql_terminator(sql);
+        oracle_query::execute_query_within(self, sql, max_rows, limits, deadline).await
     }
 
     async fn explain_query(&self, sql: &str, limits: &Limits) -> Result<ExplainResultData> {

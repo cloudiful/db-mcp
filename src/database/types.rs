@@ -3,8 +3,15 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use std::fmt;
+use std::time::Duration;
 
 use crate::config;
+
+/// Upper bound for best-effort transaction cleanup (rollback, connection
+/// close) performed after a logical deadline has expired. Cleanup is never
+/// allowed to wait unbounded.
+pub const CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
 
 use super::diagnostics::{ConnectionDiagnostic, ProbeCheck};
 
@@ -194,21 +201,159 @@ impl Limits {
             requested.min(self.hard_max_rows)
         }
     }
+
+    /// Budget for one logical query/metadata operation. Every nested stage
+    /// (acquire, begin, describe, execute, fetch, commit, rollback) shares it.
+    pub fn deadline(&self) -> Deadline {
+        Deadline::after(self.query_timeout)
+    }
+
+    /// Budget for a whole batch. Statements consume the same shared budget, so
+    /// a batch cannot run for `query_timeout * statement_count`.
+    pub fn batch_deadline(&self) -> Deadline {
+        Deadline::after(self.query_timeout)
+    }
+
+    /// Budget for a connection probe. Diagnostics run a fixed stage sequence,
+    /// so the stages share one budget instead of restarting the timer.
+    pub fn probe_budget(&self) -> Duration {
+        self.query_timeout.saturating_mul(4)
+    }
+
+    pub fn probe_deadline(&self) -> Deadline {
+        Deadline::after(self.probe_budget())
+    }
 }
 
-/// Run `fut` bounded by `limits.query_timeout`, mapping a timeout expiry or a
-/// failure into a context error prefixed with `what`.
-pub async fn run_with_timeout<T, F, E>(limits: &Limits, what: &str, fut: F) -> Result<T>
-where
-    E: Into<anyhow::Error>,
-    F: std::future::Future<Output = Result<T, E>>,
-{
-    let inner = tokio::time::timeout(limits.query_timeout, fut)
-        .await
-        .with_context(|| format!("{what} timeout"))?;
-    inner
-        .map_err(Into::into)
-        .with_context(|| format!("{what} failed"))
+/// The logical stage a deadline bounds. Timeouts carry this typed information
+/// so callers classify them without matching error strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Operation {
+    Acquire,
+    Connect,
+    Ping,
+    Begin,
+    Describe,
+    Execute,
+    Fetch,
+    Commit,
+    Rollback,
+    Query,
+    Explain,
+    Metadata,
+}
+
+impl Operation {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Acquire => "acquire",
+            Self::Connect => "connect",
+            Self::Ping => "ping",
+            Self::Begin => "begin",
+            Self::Describe => "describe",
+            Self::Execute => "execute",
+            Self::Fetch => "fetch",
+            Self::Commit => "commit",
+            Self::Rollback => "rollback",
+            Self::Query => "query",
+            Self::Explain => "explain",
+            Self::Metadata => "metadata",
+        }
+    }
+}
+
+/// Typed timeout for one logical operation, kept in the error chain so it
+/// survives human-readable context added for diagnostics.
+#[derive(Debug, Clone, Copy)]
+pub struct OperationTimeout {
+    operation: Operation,
+    budget: Duration,
+}
+
+impl OperationTimeout {
+    pub fn new(operation: Operation, budget: Duration) -> Self {
+        Self { operation, budget }
+    }
+
+    pub fn operation(&self) -> Operation {
+        self.operation
+    }
+
+    pub fn budget(&self) -> Duration {
+        self.budget
+    }
+}
+
+impl fmt::Display for OperationTimeout {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} operation exceeded its {:?} budget",
+            self.operation.as_str(),
+            self.budget
+        )
+    }
+}
+
+impl std::error::Error for OperationTimeout {}
+
+/// A single logical-operation deadline. Nested stages share one deadline: each
+/// wait gets only the remaining time and never restarts the timer.
+#[derive(Debug, Clone, Copy)]
+pub struct Deadline {
+    at: tokio::time::Instant,
+    budget: Duration,
+}
+
+impl Deadline {
+    pub fn after(budget: Duration) -> Self {
+        Self {
+            at: tokio::time::Instant::now() + budget,
+            budget,
+        }
+    }
+
+    pub fn budget(&self) -> Duration {
+        self.budget
+    }
+
+    pub fn remaining(&self) -> Duration {
+        self.at
+            .saturating_duration_since(tokio::time::Instant::now())
+    }
+
+    pub fn expired(&self) -> bool {
+        self.remaining().is_zero()
+    }
+
+    /// Run `fut` within the remaining budget. Expiry produces a typed
+    /// [`OperationTimeout`] wrapped in `{label} timeout` context; a functional
+    /// failure keeps the existing `{label} failed` context chain.
+    pub async fn run<T, E, F>(&self, operation: Operation, label: &str, fut: F) -> Result<T>
+    where
+        E: Into<anyhow::Error>,
+        F: std::future::Future<Output = std::result::Result<T, E>>,
+    {
+        match tokio::time::timeout(self.remaining(), fut).await {
+            Ok(Ok(value)) => Ok(value),
+            Ok(Err(err)) => Err(err.into()).with_context(|| format!("{label} failed")),
+            Err(_) => Err(anyhow::Error::new(OperationTimeout::new(
+                operation,
+                self.budget,
+            )))
+            .with_context(|| format!("{label} timeout")),
+        }
+    }
+}
+
+/// Classify an error as a timeout and return the bounded stage, walking the
+/// full context chain so wrapped errors keep their typed information.
+pub fn timeout_operation(error: &anyhow::Error) -> Option<Operation> {
+    error.chain().find_map(|cause| {
+        cause
+            .downcast_ref::<OperationTimeout>()
+            .map(OperationTimeout::operation)
+    })
 }
 
 #[async_trait]
@@ -256,5 +401,89 @@ pub trait DatabaseConnection: Send + Sync {
         max_rows: usize,
         limits: &Limits,
     ) -> Result<QueryResult>;
+
+    /// Execute a query inside a caller-provided shared deadline. Backends that
+    /// own their cancellation cleanup use it for every nested stage; the
+    /// default preserves behavior for connections without shared-budget
+    /// support.
+    async fn execute_query_within(
+        &self,
+        sql: &str,
+        max_rows: usize,
+        limits: &Limits,
+        _deadline: Deadline,
+    ) -> Result<QueryResult> {
+        self.execute_query(sql, max_rows, limits).await
+    }
+
     async fn explain_query(&self, sql: &str, limits: &Limits) -> Result<ExplainResultData>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn run_returns_value_within_budget() {
+        let deadline = Deadline::after(Duration::from_secs(1));
+        let value = deadline
+            .run(Operation::Query, "postgres query", async {
+                Ok::<_, anyhow::Error>(7)
+            })
+            .await
+            .expect("value within budget");
+        assert_eq!(value, 7);
+    }
+
+    #[tokio::test]
+    async fn run_maps_expiry_to_typed_operation() {
+        let deadline = Deadline::after(Duration::from_millis(10));
+        let err = deadline
+            .run(Operation::Fetch, "postgres fetch", async {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                Ok::<_, anyhow::Error>(())
+            })
+            .await
+            .expect_err("deadline should expire");
+        assert_eq!(timeout_operation(&err), Some(Operation::Fetch));
+        assert!(format!("{err:#}").contains("postgres fetch timeout"));
+    }
+
+    #[tokio::test]
+    async fn run_keeps_failure_context_without_timeout_classification() {
+        let deadline = Deadline::after(Duration::from_secs(1));
+        let err = deadline
+            .run(Operation::Query, "postgres query", async {
+                Err::<(), _>(anyhow::anyhow!("syntax error"))
+            })
+            .await
+            .expect_err("failure should propagate");
+        assert_eq!(timeout_operation(&err), None);
+        let message = format!("{err:#}");
+        assert!(message.contains("postgres query failed"));
+        assert!(message.contains("syntax error"));
+    }
+
+    #[test]
+    fn remaining_time_shrinks_and_expires() {
+        let deadline = Deadline::after(Duration::from_millis(50));
+        let before = deadline.remaining();
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(deadline.remaining() < before);
+        assert!(!deadline.expired());
+
+        let expired = Deadline::after(Duration::ZERO);
+        assert!(expired.expired());
+        assert_eq!(expired.remaining(), Duration::ZERO);
+    }
+
+    #[test]
+    fn probe_budget_scales_with_query_timeout() {
+        let limits = Limits {
+            query_timeout: Duration::from_secs(2),
+            ..Limits::from_config(&config::Config::default()).expect("default limits")
+        };
+        assert_eq!(limits.probe_budget(), Duration::from_secs(8));
+        assert_eq!(limits.batch_deadline().budget(), Duration::from_secs(2));
+    }
 }

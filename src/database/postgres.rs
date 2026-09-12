@@ -40,7 +40,7 @@ impl PostgresConnection {
             .clone())
     }
 
-    async fn refresh_schema(&self) -> Result<()> {
+    async fn refresh_schema_within(&self, deadline: &Deadline) -> Result<()> {
         if !self.config.schema.trim().is_empty() {
             *self
                 .default_schema
@@ -48,12 +48,13 @@ impl PostgresConnection {
                 .expect("default_schema poisoned") = self.config.schema.trim().to_string();
             return Ok(());
         }
-        let schema: Option<String> = run_with_timeout(
-            &self.limits,
-            "postgres current_schema",
-            sqlx::query_file_scalar!("sql/postgres/current_schema.sql").fetch_one(&self.pool),
-        )
-        .await?;
+        let schema: Option<String> = deadline
+            .run(
+                Operation::Metadata,
+                "postgres current_schema",
+                sqlx::query_file_scalar!("sql/postgres/current_schema.sql").fetch_one(&self.pool),
+            )
+            .await?;
         if let Some(schema) = schema {
             *self
                 .default_schema
@@ -61,6 +62,34 @@ impl PostgresConnection {
                 .expect("default_schema poisoned") = schema;
         }
         Ok(())
+    }
+
+    async fn describe_table_within(
+        &self,
+        schema: &str,
+        table: &str,
+        deadline: &Deadline,
+    ) -> Result<Vec<ColumnInfo>> {
+        let rows = deadline
+            .run(
+                Operation::Metadata,
+                "postgres describe_table",
+                sqlx::query_file!("sql/postgres/describe_table.sql", schema, table)
+                    .fetch_all(&self.pool),
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| ColumnInfo {
+                name: row.column_name.unwrap_or_default(),
+                data_type: row.data_type.unwrap_or_default(),
+                nullable: row.is_nullable.as_deref() == Some("YES"),
+                position: row.ordinal_position.map(|p| p as i64).unwrap_or_default(),
+                length: row.character_maximum_length.map(|v| v as i64),
+                precision: row.numeric_precision.map(|v| v as i64),
+                scale: row.numeric_scale.map(|v| v as i64),
+            })
+            .collect())
     }
 }
 
@@ -95,31 +124,26 @@ impl DatabaseConnection for PostgresConnection {
     }
 
     async fn ping(&self) -> Result<()> {
-        tokio::time::timeout(
-            self.limits.query_timeout,
-            sqlx::query_file!("sql/postgres/ping.sql").fetch_one(&self.pool),
-        )
-        .await
-        .with_context(|| {
-            format!(
-                "postgres ping timeout name={} target={}",
-                self.name,
-                redact_postgres_dsn(&self.config.dsn)
+        let deadline = self.limits.deadline();
+        let label = format!(
+            "postgres ping name={} target={}",
+            self.name,
+            redact_postgres_dsn(&self.config.dsn)
+        );
+        deadline
+            .run(
+                Operation::Ping,
+                &label,
+                sqlx::query_file!("sql/postgres/ping.sql").fetch_one(&self.pool),
             )
-        })?
-        .with_context(|| {
-            format!(
-                "postgres ping failed name={} target={}",
-                self.name,
-                redact_postgres_dsn(&self.config.dsn)
-            )
-        })?;
-        self.refresh_schema().await?;
+            .await?;
+        self.refresh_schema_within(&deadline).await?;
         Ok(())
     }
 
     async fn diagnose(&self, deep: bool) -> ConnectionDiagnostic {
         let target = self.target_summary();
+        let deadline = self.limits.probe_deadline();
         let mut checks = vec![];
         checks.push(
             timed_probe("config", target.clone(), || async {
@@ -136,22 +160,17 @@ impl DatabaseConnection for PostgresConnection {
 
         checks.push(
             timed_probe("connect/acquire", target.clone(), || async {
-                tokio::time::timeout(self.limits.query_timeout, self.pool.acquire())
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "postgres acquire timeout name={} target={}",
+                deadline
+                    .run(
+                        Operation::Acquire,
+                        &format!(
+                            "postgres acquire name={} target={}",
                             self.name,
                             redact_postgres_dsn(&self.config.dsn)
-                        )
-                    })?
-                    .with_context(|| {
-                        format!(
-                            "postgres acquire failed name={} target={}",
-                            self.name,
-                            redact_postgres_dsn(&self.config.dsn)
-                        )
-                    })?;
+                        ),
+                        self.pool.acquire(),
+                    )
+                    .await?;
                 Ok(())
             })
             .await,
@@ -162,13 +181,13 @@ impl DatabaseConnection for PostgresConnection {
 
         checks.push(
             timed_probe("pingQuery", target.clone(), || async {
-                tokio::time::timeout(
-                    self.limits.query_timeout,
-                    sqlx::query_file!("sql/postgres/ping.sql").fetch_one(&self.pool),
-                )
-                .await
-                .context("postgres ping query timeout")?
-                .context("postgres ping query failed")?;
+                deadline
+                    .run(
+                        Operation::Ping,
+                        "postgres ping query",
+                        sqlx::query_file!("sql/postgres/ping.sql").fetch_one(&self.pool),
+                    )
+                    .await?;
                 Ok(())
             })
             .await,
@@ -179,7 +198,7 @@ impl DatabaseConnection for PostgresConnection {
 
         checks.push(
             timed_probe("defaultSchema", target.clone(), || async {
-                self.refresh_schema()
+                self.refresh_schema_within(&deadline)
                     .await
                     .context("refresh postgres default schema")
             })
@@ -191,12 +210,13 @@ impl DatabaseConnection for PostgresConnection {
 
         checks.push(
             timed_probe("metadataSmokeTest", target, || async {
-                run_with_timeout(
-                    &self.limits,
-                    "postgres metadata smoke test",
-                    sqlx::query_file!("sql/postgres/metadata_smoke.sql").fetch_one(&self.pool),
-                )
-                .await?;
+                deadline
+                    .run(
+                        Operation::Metadata,
+                        "postgres metadata smoke test",
+                        sqlx::query_file!("sql/postgres/metadata_smoke.sql").fetch_one(&self.pool),
+                    )
+                    .await?;
                 Ok(())
             })
             .await,
@@ -207,17 +227,19 @@ impl DatabaseConnection for PostgresConnection {
     async fn list_schemas(&self, filter: Option<&str>, limit: usize) -> Result<Vec<SchemaInfo>> {
         let limit = self.limits.normalize_list_limit(limit);
         let filter = filter.unwrap_or("");
-        let rows = run_with_timeout(
-            &self.limits,
-            "postgres list_schemas",
-            sqlx::query_file!(
-                "sql/postgres/list_schemas.sql",
-                format!("%{filter}%"),
-                limit as i64
+        let deadline = self.limits.deadline();
+        let rows = deadline
+            .run(
+                Operation::Metadata,
+                "postgres list_schemas",
+                sqlx::query_file!(
+                    "sql/postgres/list_schemas.sql",
+                    format!("%{filter}%"),
+                    limit as i64
+                )
+                .fetch_all(&self.pool),
             )
-            .fetch_all(&self.pool),
-        )
-        .await?;
+            .await?;
         Ok(rows
             .into_iter()
             .map(|row| SchemaInfo {
@@ -235,18 +257,20 @@ impl DatabaseConnection for PostgresConnection {
         let limit = self.limits.normalize_list_limit(limit);
         let schema = schema.map(str::to_string).unwrap_or(self.schema().await?);
         let filter = filter.unwrap_or("");
-        let rows = run_with_timeout(
-            &self.limits,
-            "postgres list_tables",
-            sqlx::query_file!(
-                "sql/postgres/list_tables.sql",
-                &schema,
-                format!("%{filter}%"),
-                limit as i64
+        let deadline = self.limits.deadline();
+        let rows = deadline
+            .run(
+                Operation::Metadata,
+                "postgres list_tables",
+                sqlx::query_file!(
+                    "sql/postgres/list_tables.sql",
+                    &schema,
+                    format!("%{filter}%"),
+                    limit as i64
+                )
+                .fetch_all(&self.pool),
             )
-            .fetch_all(&self.pool),
-        )
-        .await?;
+            .await?;
         Ok(rows
             .into_iter()
             .map(|row| TableInfo {
@@ -266,18 +290,20 @@ impl DatabaseConnection for PostgresConnection {
         let limit = self.limits.normalize_list_limit(limit);
         let schema = schema.map(str::to_string).unwrap_or(self.schema().await?);
         let filter = filter.unwrap_or("");
-        let rows = run_with_timeout(
-            &self.limits,
-            "postgres search_columns",
-            sqlx::query_file!(
-                "sql/postgres/search_columns.sql",
-                &schema,
-                format!("%{filter}%"),
-                limit as i64
+        let deadline = self.limits.deadline();
+        let rows = deadline
+            .run(
+                Operation::Metadata,
+                "postgres search_columns",
+                sqlx::query_file!(
+                    "sql/postgres/search_columns.sql",
+                    &schema,
+                    format!("%{filter}%"),
+                    limit as i64
+                )
+                .fetch_all(&self.pool),
             )
-            .fetch_all(&self.pool),
-        )
-        .await?;
+            .await?;
         Ok(rows
             .into_iter()
             .map(|row| ColumnMatchInfo {
@@ -299,18 +325,20 @@ impl DatabaseConnection for PostgresConnection {
         let schema = schema.map(str::to_string).unwrap_or(self.schema().await?);
         let table = table.context("table is required")?;
         let limit = self.limits.normalize_list_limit(limit);
-        let rows = run_with_timeout(
-            &self.limits,
-            "postgres list_constraints",
-            sqlx::query_file!(
-                "sql/postgres/list_constraints.sql",
-                &schema,
-                table,
-                limit as i64
+        let deadline = self.limits.deadline();
+        let rows = deadline
+            .run(
+                Operation::Metadata,
+                "postgres list_constraints",
+                sqlx::query_file!(
+                    "sql/postgres/list_constraints.sql",
+                    &schema,
+                    table,
+                    limit as i64
+                )
+                .fetch_all(&self.pool),
             )
-            .fetch_all(&self.pool),
-        )
-        .await?;
+            .await?;
 
         Ok(rows
             .into_iter()
@@ -338,18 +366,20 @@ impl DatabaseConnection for PostgresConnection {
         let schema = schema.map(str::to_string).unwrap_or(self.schema().await?);
         let table = table.context("table is required")?;
         let limit = self.limits.normalize_list_limit(limit);
-        let rows = run_with_timeout(
-            &self.limits,
-            "postgres list_indexes",
-            sqlx::query_file!(
-                "sql/postgres/list_indexes.sql",
-                &schema,
-                table,
-                limit as i64
+        let deadline = self.limits.deadline();
+        let rows = deadline
+            .run(
+                Operation::Metadata,
+                "postgres list_indexes",
+                sqlx::query_file!(
+                    "sql/postgres/list_indexes.sql",
+                    &schema,
+                    table,
+                    limit as i64
+                )
+                .fetch_all(&self.pool),
             )
-            .fetch_all(&self.pool),
-        )
-        .await?;
+            .await?;
         Ok(rows
             .into_iter()
             .map(|row| {
@@ -381,22 +411,25 @@ impl DatabaseConnection for PostgresConnection {
         table: &str,
     ) -> Result<TableCommentInfo> {
         let schema = schema.map(str::to_string).unwrap_or(self.schema().await?);
-        let table_comment: Option<String> = run_with_timeout(
-            &self.limits,
-            "postgres get_table_comment",
-            sqlx::query_file_scalar!("sql/postgres/get_table_comment.sql", &schema, table)
-                .fetch_one(&self.pool),
-        )
-        .await
-        .ok()
-        .flatten();
-        let rows = run_with_timeout(
-            &self.limits,
-            "postgres list_column_comments",
-            sqlx::query_file!("sql/postgres/list_column_comments.sql", &schema, table)
-                .fetch_all(&self.pool),
-        )
-        .await?;
+        let deadline = self.limits.deadline();
+        let table_comment: Option<String> = deadline
+            .run(
+                Operation::Metadata,
+                "postgres get_table_comment",
+                sqlx::query_file_scalar!("sql/postgres/get_table_comment.sql", &schema, table)
+                    .fetch_one(&self.pool),
+            )
+            .await
+            .ok()
+            .flatten();
+        let rows = deadline
+            .run(
+                Operation::Metadata,
+                "postgres list_column_comments",
+                sqlx::query_file!("sql/postgres/list_column_comments.sql", &schema, table)
+                    .fetch_all(&self.pool),
+            )
+            .await?;
         Ok(TableCommentInfo {
             schema,
             table: table.to_string(),
@@ -414,49 +447,37 @@ impl DatabaseConnection for PostgresConnection {
 
     async fn describe_table(&self, schema: Option<&str>, table: &str) -> Result<Vec<ColumnInfo>> {
         let schema = schema.map(str::to_string).unwrap_or(self.schema().await?);
-        let rows = run_with_timeout(
-            &self.limits,
-            "postgres describe_table",
-            sqlx::query_file!("sql/postgres/describe_table.sql", &schema, table)
-                .fetch_all(&self.pool),
-        )
-        .await?;
-        Ok(rows
-            .into_iter()
-            .map(|row| ColumnInfo {
-                name: row.column_name.unwrap_or_default(),
-                data_type: row.data_type.unwrap_or_default(),
-                nullable: row.is_nullable.as_deref() == Some("YES"),
-                position: row.ordinal_position.map(|p| p as i64).unwrap_or_default(),
-                length: row.character_maximum_length.map(|v| v as i64),
-                precision: row.numeric_precision.map(|v| v as i64),
-                scale: row.numeric_scale.map(|v| v as i64),
-            })
-            .collect())
+        let deadline = self.limits.deadline();
+        self.describe_table_within(&schema, table, &deadline).await
     }
 
     async fn get_table_ddl(&self, schema: Option<&str>, table: &str) -> Result<TableDDLInfo> {
         let schema = schema.map(str::to_string).unwrap_or(self.schema().await?);
-        let object_type: Option<String> = run_with_timeout(
-            &self.limits,
-            "postgres get_table_type",
-            sqlx::query_file_scalar!("sql/postgres/get_table_type.sql", &schema, table)
-                .fetch_one(&self.pool),
-        )
-        .await?;
+        let deadline = self.limits.deadline();
+        let object_type: Option<String> = deadline
+            .run(
+                Operation::Metadata,
+                "postgres get_table_type",
+                sqlx::query_file_scalar!("sql/postgres/get_table_type.sql", &schema, table)
+                    .fetch_one(&self.pool),
+            )
+            .await?;
         let object_type = object_type
             .ok_or_else(|| anyhow::anyhow!("table or view {schema}.{table} not found"))?;
         let ddl: String = if object_type == "VIEW" {
-            run_with_timeout(
-                &self.limits,
-                "postgres get_view_ddl",
-                sqlx::query_file_scalar!("sql/postgres/get_view_ddl.sql", &schema, table)
-                    .fetch_one(&self.pool),
-            )
-            .await?
-            .unwrap_or_default()
+            deadline
+                .run(
+                    Operation::Metadata,
+                    "postgres get_view_ddl",
+                    sqlx::query_file_scalar!("sql/postgres/get_view_ddl.sql", &schema, table)
+                        .fetch_one(&self.pool),
+                )
+                .await?
+                .unwrap_or_default()
         } else {
-            let columns = self.describe_table(Some(&schema), table).await?;
+            let columns = self
+                .describe_table_within(&schema, table, &deadline)
+                .await?;
             let mut ddl = format!(
                 "CREATE TABLE {}.{} (\n",
                 quote_ident(&schema),
@@ -497,6 +518,25 @@ impl DatabaseConnection for PostgresConnection {
         let sql = strip_trailing_sql_terminator(sql);
         postgres_query::execute_query(&self.pool, self.config.read_only, sql, max_rows, limits)
             .await
+    }
+
+    async fn execute_query_within(
+        &self,
+        sql: &str,
+        max_rows: usize,
+        limits: &Limits,
+        deadline: Deadline,
+    ) -> Result<QueryResult> {
+        let sql = strip_trailing_sql_terminator(sql);
+        postgres_query::execute_query_within(
+            &self.pool,
+            self.config.read_only,
+            sql,
+            max_rows,
+            limits,
+            deadline,
+        )
+        .await
     }
 
     async fn explain_query(&self, sql: &str, limits: &Limits) -> Result<ExplainResultData> {

@@ -38,6 +38,12 @@ fn write_enabled_test_config() -> Option<Config> {
     Some(cfg)
 }
 
+fn short_timeout_test_config() -> Option<Config> {
+    let mut cfg = test_config()?;
+    cfg.limits.query_timeout = "1s".to_string();
+    Some(cfg)
+}
+
 const SKIP_MESSAGE: &str = "skipping postgres integration test; DBMCP_TEST_POSTGRES_DSN not set";
 
 #[tokio::test]
@@ -283,6 +289,36 @@ async fn postgres_read_only_transactions_reject_writes() {
             || message.contains("read only")
             || message.contains("cannot execute"),
         "unexpected error: {message}"
+    );
+}
+
+#[tokio::test]
+async fn postgres_timeout_is_bounded_and_the_pool_recovers() {
+    let Some(cfg) = short_timeout_test_config() else {
+        eprintln!("{SKIP_MESSAGE}");
+        return;
+    };
+    let manager = Manager::new(&cfg).await.expect("manager init");
+    let conn = manager.connection(Some("postgres")).expect("connection");
+
+    let err = conn
+        .execute_query("select pg_sleep(5)", 10, manager.limits())
+        .await
+        .expect_err("pg_sleep should exceed the logical deadline");
+    assert!(
+        format!("{err:#}").contains("timeout"),
+        "unexpected error: {err:#}"
+    );
+
+    // The timed-out transaction is never committed; the unconfirmed in-flight
+    // connection is evicted instead of being returned to the pool.
+    let after = conn
+        .execute_query("select 1 as value", 10, manager.limits())
+        .await
+        .expect("pool should recover with a fresh connection");
+    assert_eq!(
+        after.rows[0].get("value").and_then(|value| value.as_i64()),
+        Some(1)
     );
 }
 

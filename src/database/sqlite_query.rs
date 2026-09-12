@@ -1,12 +1,16 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use base64::Engine;
 use futures_util::TryStreamExt;
 use serde_json::{Map, Value};
-use sqlx::sqlite::SqliteRow;
-use sqlx::{Column, Executor, Row, SqlSafeStr, SqliteConnection, SqlitePool, TypeInfo, ValueRef};
+use sqlx::pool::PoolConnection;
+use sqlx::sqlite::{SqliteConnection, SqlitePool, SqliteRow};
+use sqlx::{Column, Executor, Row, SqlSafeStr, TypeInfo, ValueRef};
 use std::time::Instant;
 
-use super::{Limits, QueryColumn, QueryResult, RowCollector, empty_result, run_with_timeout};
+use super::{
+    CLEANUP_TIMEOUT, Deadline, Limits, Operation, QueryColumn, QueryResult, RowCollector,
+    empty_result, timeout_operation,
+};
 
 // SQLx checked query macros resolve one database per crate from the compile-time
 // DATABASE_URL, so SQLite probes cannot use query_file! in a mixed-backend crate.
@@ -26,8 +30,30 @@ pub async fn collect_rows(
     requested_max_rows: usize,
     limits: &Limits,
 ) -> Result<QueryResult> {
-    let mut conn = run_with_timeout(limits, "sqlite acquire", pool.acquire()).await?;
-    execute_sql_with_connection(&mut conn, sql, requested_max_rows, limits).await
+    let deadline = limits.deadline();
+    collect_rows_within(pool, sql, requested_max_rows, limits, deadline).await
+}
+
+pub async fn collect_rows_within(
+    pool: &SqlitePool,
+    sql: &str,
+    requested_max_rows: usize,
+    limits: &Limits,
+    deadline: Deadline,
+) -> Result<QueryResult> {
+    let mut conn = deadline
+        .run(Operation::Acquire, "sqlite acquire", pool.acquire())
+        .await?;
+    let result =
+        execute_sql_with_connection(&mut conn, sql, requested_max_rows, limits, &deadline).await;
+    if let Err(err) = &result
+        && timeout_operation(err).is_some()
+    {
+        // A driver-level timeout leaves the statement state unknown on this
+        // physical connection; close it instead of returning it to the pool.
+        evict_connection(conn).await;
+    }
+    result
 }
 
 pub async fn execute_sql_with_connection(
@@ -35,21 +61,24 @@ pub async fn execute_sql_with_connection(
     sql: &str,
     requested_max_rows: usize,
     limits: &Limits,
+    deadline: &Deadline,
 ) -> Result<QueryResult> {
-    let describe = run_with_timeout(
-        limits,
-        "sqlite describe",
-        (&mut *conn).describe(sqlx::AssertSqlSafe(sql).into_sql_str()),
-    )
-    .await?;
+    let describe = deadline
+        .run(
+            Operation::Describe,
+            "sqlite describe",
+            (&mut *conn).describe(sqlx::AssertSqlSafe(sql).into_sql_str()),
+        )
+        .await?;
     if describe.columns().is_empty() {
         let started = Instant::now();
-        let result = tokio::time::timeout(
-            limits.query_timeout,
-            (&mut *conn).execute(sqlx::AssertSqlSafe(sql)),
-        )
-        .await
-        .context("query timeout")??;
+        let result = deadline
+            .run(
+                Operation::Execute,
+                "query",
+                (&mut *conn).execute(sqlx::AssertSqlSafe(sql)),
+            )
+            .await?;
         return Ok(empty_result(
             result.rows_affected() as usize,
             limits,
@@ -66,7 +95,15 @@ pub async fn execute_sql_with_connection(
             data_type: col.type_info().name().to_string(),
         })
         .collect();
-    collect_rows_with_connection(&mut *conn, sql, requested_max_rows, limits, columns).await
+    collect_rows_with_connection(
+        &mut *conn,
+        sql,
+        requested_max_rows,
+        limits,
+        deadline,
+        columns,
+    )
+    .await
 }
 
 async fn collect_rows_with_connection(
@@ -74,6 +111,7 @@ async fn collect_rows_with_connection(
     sql: &str,
     requested_max_rows: usize,
     limits: &Limits,
+    deadline: &Deadline,
     columns: Vec<QueryColumn>,
 ) -> Result<QueryResult> {
     let applied_max_rows = limits.normalize_max_rows(requested_max_rows);
@@ -81,12 +119,14 @@ async fn collect_rows_with_connection(
     let mut collector = RowCollector::new(applied_max_rows, started);
     collector.set_columns(columns);
     let mut row_stream = sqlx::query(sqlx::AssertSqlSafe(sql)).fetch(&mut *conn);
-    let deadline = tokio::time::Instant::now() + limits.query_timeout;
 
-    while let Some(row) = tokio::time::timeout_at(deadline, row_stream.try_next())
-        .await
-        .context("query timeout")??
-    {
+    loop {
+        let next = deadline
+            .run(Operation::Fetch, "query", row_stream.try_next())
+            .await?;
+        let Some(row) = next else {
+            break;
+        };
         if collector.at_row_limit() {
             collector.mark_row_limit();
             break;
@@ -97,6 +137,10 @@ async fn collect_rows_with_connection(
     }
 
     Ok(collector.finish())
+}
+
+async fn evict_connection(conn: PoolConnection<sqlx::Sqlite>) {
+    let _ = tokio::time::timeout(CLEANUP_TIMEOUT, conn.close()).await;
 }
 
 fn sqlite_row_to_json(row: &SqliteRow) -> Result<Map<String, Value>> {

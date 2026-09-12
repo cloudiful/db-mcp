@@ -18,10 +18,13 @@ pub(super) async fn execute_query_batch(
     }
 
     let connection = conn.info().name;
+    // One shared budget for the whole batch: later statements see only the
+    // remaining time, and a failure keeps its statement index.
+    let deadline = limits.batch_deadline();
     let mut results = Vec::with_capacity(statement_count);
     for (index, query) in input.queries.into_iter().enumerate() {
         match conn
-            .execute_query(&query.sql, query.max_rows.unwrap_or(0), limits)
+            .execute_query_within(&query.sql, query.max_rows.unwrap_or(0), limits, deadline)
             .await
         {
             Ok(result) => results.push(ExecuteQueriesResult { index, result }),
@@ -54,13 +57,16 @@ mod tests {
     use std::{
         path::PathBuf,
         sync::atomic::{AtomicU64, Ordering},
-        time::{SystemTime, UNIX_EPOCH},
+        time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
     use super::execute_query_batch;
     use crate::{
         config::{Config, SQLiteConfig},
-        database::{DatabaseConnection, Limits, sqlite::SQLiteConnection, to_json_object},
+        database::{
+            DatabaseConnection, Limits, Operation, sqlite::SQLiteConnection, timeout_operation,
+            to_json_object,
+        },
         mcp_types::{ExecuteQueriesInput, ExecuteQueryItem},
     };
 
@@ -69,6 +75,18 @@ mod tests {
     fn limits() -> Limits {
         Limits::from_config(&Config::default()).expect("default limits")
     }
+
+    fn limits_with_timeout(timeout: Duration) -> Limits {
+        let mut limits = limits();
+        limits.query_timeout = timeout;
+        limits
+    }
+
+    /// A deterministic CPU-bound query that always outlives a short test
+    /// budget, then completes so the sqlite worker is not stuck indefinitely.
+    const SLOW_SQL: &str = "with recursive counter(value) as (\
+        select 1 union all select value + 1 from counter where value < 5000000\
+    ) select count(*) as value from counter";
 
     fn test_db_path() -> PathBuf {
         let suffix = SystemTime::now()
@@ -167,6 +185,62 @@ mod tests {
         assert_eq!(output.results.len(), 1);
         assert_eq!(output.results[0].index, 0);
         assert_eq!(output.error.as_ref().expect("batch error").index, 1);
+
+        drop(conn);
+        std::fs::remove_file(path).expect("remove test database");
+    }
+
+    #[tokio::test]
+    async fn batch_shares_one_budget_and_keeps_the_failing_index() {
+        let (conn, _default_limits, path) = read_only_connection().await;
+        let limits = limits_with_timeout(Duration::from_millis(300));
+
+        let output = execute_query_batch(&conn, input(&[SLOW_SQL, "select 2 as value"]), &limits)
+            .await
+            .expect("batch failure should be structured");
+
+        assert_eq!(output.status, "failed");
+        assert!(
+            output.results.is_empty(),
+            "the slow statement runs first and must stop the batch"
+        );
+        let error = output.error.expect("batch error");
+        assert_eq!(error.index, 0);
+        assert!(
+            error.message.contains("timeout"),
+            "unexpected error: {}",
+            error.message
+        );
+
+        drop(conn);
+        std::fs::remove_file(path).expect("remove test database");
+    }
+
+    #[tokio::test]
+    async fn shared_deadline_timeout_carries_typed_operation() {
+        let (conn, default_limits, path) = read_only_connection().await;
+        // Warm the pool first so acquire/describe do not consume the short
+        // budget and the timeout lands on the streaming fetch.
+        conn.execute_query("select 1 as value", 5, &default_limits)
+            .await
+            .expect("warm-up query");
+        let limits = limits_with_timeout(Duration::from_millis(300));
+        let deadline = limits.batch_deadline();
+
+        let err = conn
+            .execute_query_within(SLOW_SQL, 5, &limits, deadline)
+            .await
+            .expect_err("slow query should exceed the shared deadline");
+
+        let operation = timeout_operation(&err).expect("timeout should be typed");
+        assert!(
+            matches!(
+                operation,
+                Operation::Describe | Operation::Execute | Operation::Fetch
+            ),
+            "unexpected operation: {operation:?}"
+        );
+        assert!(format!("{err:#}").contains("timeout"));
 
         drop(conn);
         std::fs::remove_file(path).expect("remove test database");
