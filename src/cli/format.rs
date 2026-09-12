@@ -1,4 +1,4 @@
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::config::OutputFormat;
 
@@ -15,78 +15,37 @@ pub fn render_success(format: OutputFormat, value: &Value) -> Result<String, Cli
     }
 }
 
-/// Stable error payload written to stderr: `{error, kind, command}`.
+/// Stable error payload written to stderr. Keeps the historical `error`, `kind`,
+/// and `command` fields and adds the shared machine-readable `code` plus the
+/// optional timeout/cancellation detail when the error chain carries it.
 pub fn error_json(command: &str, err: &CliError) -> String {
-    serde_json::json!({
-        "error": err.message,
-        "kind": err.kind.as_str(),
-        "command": command,
-    })
-    .to_string()
-}
-
-/// Best-effort removal of credentials from an error message before it reaches
-/// stderr. The driver error chain may otherwise echo a DSN or password.
-pub fn redact_secrets(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(pos) = rest.find(|c: char| c.is_whitespace()) {
-        let (token, tail) = rest.split_at(pos);
-        out.push_str(&redact_token(token));
-        let ws_end = tail
-            .find(|c: char| !c.is_whitespace())
-            .unwrap_or(tail.len());
-        out.push_str(&tail[..ws_end]);
-        rest = &tail[ws_end..];
+    let mut payload = Map::new();
+    payload.insert("error".to_string(), Value::String(err.message.clone()));
+    payload.insert(
+        "kind".to_string(),
+        Value::String(err.kind.as_str().to_string()),
+    );
+    payload.insert(
+        "code".to_string(),
+        Value::String(err.code.as_str().to_string()),
+    );
+    payload.insert("command".to_string(), Value::String(command.to_string()));
+    if let Some(operation) = &err.operation {
+        payload.insert("operation".to_string(), Value::String(operation.clone()));
     }
-    out.push_str(&redact_token(rest));
-    out
-}
-
-fn redact_token(token: &str) -> String {
-    let redacted = redact_url_userinfo(token);
-    let Some(eq) = redacted.find('=') else {
-        return redacted;
-    };
-    let key = &redacted[..eq];
-    let bare = key.rsplit(['?', '&', ';']).next().unwrap_or(key);
-    if is_secret_key(bare) {
-        format!("{key}=REDACTED")
-    } else {
-        redacted
+    if let Some(timeout) = err.timeout {
+        payload.insert("timeout".to_string(), Value::Bool(timeout));
     }
-}
-
-fn redact_url_userinfo(token: &str) -> String {
-    let Some(scheme_end) = token.find("://") else {
-        return token.to_string();
-    };
-    let after_scheme = &token[scheme_end + 3..];
-    let authority_end = after_scheme
-        .find(['/', '?', '#'])
-        .unwrap_or(after_scheme.len());
-    let authority = &after_scheme[..authority_end];
-    let Some(at) = authority.rfind('@') else {
-        return token.to_string();
-    };
-    let userinfo = &authority[..at];
-    let Some(colon) = userinfo.find(':') else {
-        return token.to_string();
-    };
-    format!(
-        "{}{}:REDACTED@{}",
-        &token[..scheme_end + 3],
-        &userinfo[..colon],
-        &after_scheme[at + 1..],
-    )
-}
-
-fn is_secret_key(key: &str) -> bool {
-    let key = key.trim_matches(['"', '\'']).to_ascii_lowercase();
-    matches!(
-        key.as_str(),
-        "password" | "pwd" | "passwd" | "secret" | "token" | "apikey" | "api_key" | "access_token"
-    )
+    if let Some(cancellation) = &err.cancellation {
+        payload.insert(
+            "cancellation".to_string(),
+            Value::String(cancellation.clone()),
+        );
+    }
+    if let Some(result_unknown) = err.result_unknown {
+        payload.insert("resultUnknown".to_string(), Value::Bool(result_unknown));
+    }
+    Value::Object(payload).to_string()
 }
 
 fn render_text(value: &Value) -> String {
@@ -179,36 +138,15 @@ mod tests {
     }
 
     #[test]
-    fn error_json_carries_error_kind_and_command() {
+    fn error_json_carries_error_kind_code_and_command() {
         let err = CliError::invalid_args("bad input");
         let rendered = error_json("query", &err);
         let parsed: Value = serde_json::from_str(&rendered).expect("parse error json");
         assert_eq!(parsed["error"], "bad input");
         assert_eq!(parsed["kind"], "invalid_args");
+        assert_eq!(parsed["code"], "invalid_params");
         assert_eq!(parsed["command"], "query");
-    }
-
-    #[test]
-    fn redacts_key_value_credentials() {
-        assert_eq!(redact_secrets("password=hunter2"), "password=REDACTED");
-        assert_eq!(redact_secrets("token=abc123 next"), "token=REDACTED next");
-    }
-
-    #[test]
-    fn redacts_url_userinfo_credentials() {
-        assert_eq!(
-            redact_secrets("postgres://alice:s3cret@db.example.com:5432/app"),
-            "postgres://alice:REDACTED@db.example.com:5432/app"
-        );
-        assert_eq!(
-            redact_secrets("connect postgres://alice:s3cret@host/db?password=x"),
-            "connect postgres://alice:REDACTED@host/db?password=REDACTED"
-        );
-    }
-
-    #[test]
-    fn leaves_non_secret_text_unchanged() {
-        assert_eq!(redact_secrets("select 1"), "select 1");
-        assert_eq!(redact_secrets("user=alice"), "user=alice");
+        assert!(parsed.get("operation").is_none());
+        assert!(parsed.get("timeout").is_none());
     }
 }

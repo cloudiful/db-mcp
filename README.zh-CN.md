@@ -64,7 +64,7 @@ cargo run
 | `queries` | 1–8 条，每项 `{"sql":"..."}`，按顺序执行；首个失败即停止 |
 | `max_rows` | 可选行数上限，受 `limits.hardMaxRows` 约束 |
 
-`db_query` 要求只读连接（见[安全边界](#安全边界)）。返回 `{"kind":"single"|"batch","data":{...}}`。
+`db_query` 要求只读连接（见[安全边界](#安全边界)）。返回 `{"kind":"single"|"batch","data":{...}}`。批量失败仍为 `kind: "batch"` 且 `status: "failed"`；其 `error` 保留失败语句的 `index` 与 `message`，并带上共享的稳定字段（`code`、`kind`，以及可选的 `operation`/`timeout`/`cancellation`/`resultUnknown`）。后续语句不再执行。
 
 ### `db_explain`
 
@@ -149,13 +149,13 @@ dbmcp -c ./dbmcp.example.json explain --connection postgres-dev --file query.sql
 {"kind":"single","data":{"connection":"postgres-dev","result":{"rows":[]}}}
 ```
 
-错误是 stderr 上的单行 JSON：
+错误是 stderr 上的单行 JSON。`error`、`kind`、`command` 字段保持稳定；`code` 是共享的机器可读 code，超时相关字段仅在错误链携带时出现：
 
 ```json
-{"error":"...","kind":"invalid_args","command":"query"}
+{"error":"...","kind":"timeout","code":"operation_timeout","command":"query","operation":"execute","timeout":true,"cancellation":"unconfirmed","resultUnknown":true}
 ```
 
-退出码：
+退出码保持不变：
 
 | 码 | 含义 |
 | --- | --- |
@@ -165,6 +165,29 @@ dbmcp -c ./dbmcp.example.json explain --connection postgres-dev --file query.sql
 | `3` | 连接不存在 |
 | `4` | 超时 |
 | `5` | 后端/数据库错误 |
+
+## 错误契约
+
+MCP 工具失败是工具级结果（`isError: true`），其 `structuredContent`（与可见文本一致）为下方错误文档。参数格式错误和未知工具仍是 JSON-RPC `-32602` invalid-params 错误，绝不会变成工具结果。
+
+| 字段 | 含义 |
+| --- | --- |
+| `code` | 稳定的机器可读 code：`invalid_params`、`missing_connection`、`operation_timeout`、`backend_error` 或 `internal_error` |
+| `kind` | 与 CLI 退出码对应的粗粒度分类：`invalid_args`、`missing_connection`、`timeout`、`backend` 或 `internal` |
+| `message` | 脱敏且限制长度的调用方面向消息 |
+| `operation` | 可选的超时逻辑阶段（`acquire`、`connect`、`begin`、`describe`、`execute`、`fetch`、`commit`、`rollback`、`query`、`explain`、`metadata`） |
+| `connection` | 可选的调用连接名 |
+| `timeout` | 仅超时时存在且为 `true` |
+| `cancellation` | 可选，`confirmed` 或 `unconfirmed` |
+| `resultUnknown` | 可选；写操作超时后其结果可能未知时为 `true` |
+
+`limits.queryTimeout`（默认 `60s`）是单个逻辑操作的统一截止时间：acquire、begin、describe、execute/fetch、commit/rollback 共享剩余时间，而不是每阶段重新计时；批量查询的所有语句共享同一截止时间。超时时：
+
+- `cancellation: "confirmed"` 表示引擎或驱动已报告语句停止（PostgreSQL `statement_timeout` 的 SQLSTATE `57014`、SQLite progress handler 中断）。
+- `cancellation: "unconfirmed"` 表示客户端截止时间先到；物理连接被丢弃而不放回连接池，语句可能仍在执行。当前 Oracle 驱动无法验证中断，始终报告 `unconfirmed`。
+- `resultUnknown: true` 表示写操作可能已生效也可能未生效，不要盲目重试。
+
+完整 cause chain、原始 SQL 与 DSN 凭据不会进入 MCP 或 CLI 响应；脱敏后的完整链只写入服务端日志。诊断（`db_connections` 的 `diagnose`、`connections list --deep`）仍返回脱敏后的探测链，以保证可诊断性。
 
 ## 安全边界
 

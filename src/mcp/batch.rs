@@ -2,6 +2,8 @@ use anyhow::Result;
 
 use crate::{database, mcp_types::*};
 
+use super::errors::{classify, log_failure};
+
 pub(super) async fn execute_query_batch(
     conn: &dyn database::DatabaseConnection,
     input: ExecuteQueriesInput,
@@ -29,6 +31,11 @@ pub(super) async fn execute_query_batch(
         {
             Ok(result) => results.push(ExecuteQueriesResult { index, result }),
             Err(error) => {
+                // The failing statement keeps its index and the same stable
+                // error fields as a tool-level failure; the full chain goes to
+                // the controlled log only.
+                log_failure(&error, Some(&connection));
+                let payload = classify(&error, Some(&connection)).payload;
                 return Ok(ExecuteQueriesOutput {
                     connection,
                     status: "failed".to_string(),
@@ -36,7 +43,13 @@ pub(super) async fn execute_query_batch(
                     results,
                     error: Some(ExecuteQueriesError {
                         index,
-                        message: format!("{error:#}"),
+                        message: payload.message,
+                        code: payload.code,
+                        kind: payload.kind,
+                        operation: payload.operation,
+                        timeout: payload.timeout,
+                        cancellation: payload.cancellation,
+                        result_unknown: payload.result_unknown,
                     }),
                 });
             }
@@ -184,7 +197,13 @@ mod tests {
         assert_eq!(output.statement_count, 3);
         assert_eq!(output.results.len(), 1);
         assert_eq!(output.results[0].index, 0);
-        assert_eq!(output.error.as_ref().expect("batch error").index, 1);
+        let error = output.error.as_ref().expect("batch error");
+        assert_eq!(error.index, 1);
+        assert_eq!(error.code, "backend_error");
+        assert_eq!(error.kind, "backend");
+        assert!(error.message.contains("missing_batch_table"), "{error:?}");
+        assert!(error.timeout.is_none());
+        assert!(error.cancellation.is_none());
 
         drop(conn);
         std::fs::remove_file(path).expect("remove test database");
@@ -206,6 +225,13 @@ mod tests {
         );
         let error = output.error.expect("batch error");
         assert_eq!(error.index, 0);
+        assert_eq!(error.code, "operation_timeout");
+        assert_eq!(error.kind, "timeout");
+        assert_eq!(error.timeout, Some(true));
+        assert!(
+            error.cancellation.is_some(),
+            "a deadline timeout must carry a typed cancellation state: {error:?}"
+        );
         assert!(
             error.message.contains("timeout"),
             "unexpected error: {}",

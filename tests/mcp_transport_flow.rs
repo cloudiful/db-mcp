@@ -166,7 +166,7 @@ async fn stdio_flow_surfaces_tool_and_protocol_errors() {
         .await
         .expect("stdio client initialize");
 
-    // Unknown connection is a tool-level error carried in the result.
+    // Unknown connection is a structured tool-level error carried in the result.
     let result = client
         .call_tool(call(
             "db_query",
@@ -175,16 +175,54 @@ async fn stdio_flow_surfaces_tool_and_protocol_errors() {
         .await
         .expect("call with unknown connection");
     assert_eq!(result.is_error, Some(true));
-    let text = result
-        .content
-        .first()
-        .expect("error text")
-        .as_text()
-        .unwrap();
+    let value = visible_json(&result);
+    assert_eq!(value["code"], "missing_connection");
+    assert_eq!(value["kind"], "missing_connection");
+    assert_eq!(value["connection"], "missing-conn");
     assert!(
-        text.text.contains("missing-conn"),
-        "unexpected error: {}",
-        text.text
+        value["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("missing-conn")),
+        "unexpected error: {value}"
+    );
+    assert!(value.get("timeout").is_none());
+    assert_eq!(
+        value,
+        result.structured_content.clone().expect("structured error"),
+        "visible error text must match structured content"
+    );
+
+    // A batch failure keeps the failing index and the stable error fields.
+    let result = client
+        .call_tool(call(
+            "db_query",
+            json!({
+                "connection": "sqlite",
+                "queries": [
+                    { "sql": "select 1 as value" },
+                    { "sql": "select * from missing_flow_table" }
+                ]
+            }),
+        ))
+        .await
+        .expect("call batch with a failing statement");
+    assert_eq!(
+        result.is_error,
+        Some(false),
+        "a partially successful batch is result data"
+    );
+    let batch = result.structured_content.expect("structured batch content");
+    assert_eq!(batch["kind"], "batch");
+    assert_eq!(batch["data"]["status"], "failed");
+    let batch_error = &batch["data"]["error"];
+    assert_eq!(batch_error["index"], 1);
+    assert_eq!(batch_error["code"], "backend_error");
+    assert_eq!(batch_error["kind"], "backend");
+    assert!(
+        batch_error["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("missing_flow_table")),
+        "unexpected batch error: {batch_error}"
     );
 
     // Malformed arguments are a protocol-level error.

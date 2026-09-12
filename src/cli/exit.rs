@@ -2,7 +2,7 @@ use std::fmt;
 
 use anyhow::Error;
 
-use super::format::redact_secrets;
+use crate::mcp::errors::{self, ErrorCode, ErrorPayload};
 
 /// Exit-code contract for the progressive CLI.
 ///
@@ -37,19 +37,50 @@ impl CliErrorKind {
             Self::Internal => 1,
         }
     }
+
+    /// The shared stable code for this coarse kind.
+    pub const fn code(self) -> ErrorCode {
+        match self {
+            Self::InvalidArgs => ErrorCode::InvalidParams,
+            Self::MissingConnection => ErrorCode::MissingConnection,
+            Self::Timeout => ErrorCode::OperationTimeout,
+            Self::Backend => ErrorCode::BackendError,
+            Self::Internal => ErrorCode::InternalError,
+        }
+    }
+
+    pub const fn from_code(code: ErrorCode) -> Self {
+        match code {
+            ErrorCode::InvalidParams => Self::InvalidArgs,
+            ErrorCode::MissingConnection => Self::MissingConnection,
+            ErrorCode::OperationTimeout => Self::Timeout,
+            ErrorCode::BackendError => Self::Backend,
+            ErrorCode::InternalError => Self::Internal,
+        }
+    }
 }
 
 #[derive(Debug)]
 pub struct CliError {
     pub kind: CliErrorKind,
     pub message: String,
+    pub code: ErrorCode,
+    pub operation: Option<String>,
+    pub timeout: Option<bool>,
+    pub cancellation: Option<String>,
+    pub result_unknown: Option<bool>,
 }
 
 impl CliError {
     pub fn new(kind: CliErrorKind, message: impl Into<String>) -> Self {
         Self {
             kind,
+            code: kind.code(),
             message: message.into(),
+            operation: None,
+            timeout: None,
+            cancellation: None,
+            result_unknown: None,
         }
     }
 
@@ -61,16 +92,33 @@ impl CliError {
         Self::new(CliErrorKind::Internal, message)
     }
 
-    /// Classify a database-operation error chain and redact credentials.
+    /// Classify a database-operation error chain and redact credentials. The
+    /// typed `OperationTimeout`/`CancellationReport` markers select the timeout
+    /// kind; no string matching is used for timeout detection.
     pub fn from_anyhow(err: Error) -> Self {
-        let kind = classify(&err);
-        Self::with_kind(kind, err)
+        let classified = errors::classify(&err, None);
+        errors::log_failure(&err, None);
+        Self::from_classified(CliErrorKind::from_code(classified.code), classified.payload)
     }
 
     /// Build an error from an anyhow chain with a caller-chosen kind, redacting
-    /// credentials from the rendered message.
+    /// credentials and keeping any typed timeout detail from the chain.
     pub fn with_kind(kind: CliErrorKind, err: Error) -> Self {
-        Self::new(kind, redact_secrets(&format!("{err:#}")))
+        let classified = errors::classify(&err, None);
+        errors::log_failure(&err, None);
+        Self::from_classified(kind, classified.payload)
+    }
+
+    fn from_classified(kind: CliErrorKind, payload: ErrorPayload) -> Self {
+        Self {
+            kind,
+            code: kind.code(),
+            message: payload.message,
+            operation: payload.operation,
+            timeout: payload.timeout,
+            cancellation: payload.cancellation,
+            result_unknown: payload.result_unknown,
+        }
     }
 
     pub fn exit_code(&self) -> u8 {
@@ -84,26 +132,12 @@ impl fmt::Display for CliError {
     }
 }
 
-/// Classify a runtime error chain by the first matching signal. Invalid
-/// arguments are normally constructed at CLI validation points; this covers
-/// the connection-resolution, timeout, and backend signals that only surface
-/// inside an anyhow chain.
-fn classify(err: &Error) -> CliErrorKind {
-    let text = format!("{err:#}").to_lowercase();
-    if text.contains("not found") || text.contains("connection is required") {
-        CliErrorKind::MissingConnection
-    } else if text.contains("timeout") || text.contains("timed out") {
-        CliErrorKind::Timeout
-    } else if text.contains("invalid parameter") || text.contains("invalid argument") {
-        CliErrorKind::InvalidArgs
-    } else {
-        CliErrorKind::Backend
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
+    use crate::database::{Cancellation, Operation, OperationTimeout, attach_cancellation};
 
     #[test]
     fn exit_codes_follow_the_cli_contract() {
@@ -130,12 +164,42 @@ mod tests {
     fn classifies_missing_connection_and_timeout_and_backend() {
         let missing = CliError::from_anyhow(anyhow::anyhow!("connection \"bogus\" not found"));
         assert_eq!(missing.kind, CliErrorKind::MissingConnection);
+        assert_eq!(missing.code, ErrorCode::MissingConnection);
 
-        let timeout = CliError::from_anyhow(anyhow::anyhow!("query timeout"));
+        let timeout = CliError::from_anyhow(Error::new(OperationTimeout::new(
+            Operation::Query,
+            Duration::from_millis(5),
+        )));
         assert_eq!(timeout.kind, CliErrorKind::Timeout);
+        assert_eq!(timeout.code, ErrorCode::OperationTimeout);
+        assert_eq!(timeout.operation.as_deref(), Some("query"));
+        assert_eq!(timeout.timeout, Some(true));
 
         let backend = CliError::from_anyhow(anyhow::anyhow!("syntax error near SELECT"));
         assert_eq!(backend.kind, CliErrorKind::Backend);
+        assert_eq!(backend.code, ErrorCode::BackendError);
+    }
+
+    #[test]
+    fn typed_cancellation_is_carried_into_the_cli_error() {
+        let err = attach_cancellation(
+            Error::new(OperationTimeout::new(
+                Operation::Fetch,
+                Duration::from_millis(5),
+            )),
+            Operation::Fetch,
+            Cancellation::Unconfirmed,
+            true,
+        );
+        let cli = CliError::from_anyhow(err);
+        assert_eq!(cli.kind, CliErrorKind::Timeout);
+        assert_eq!(cli.cancellation.as_deref(), Some("unconfirmed"));
+        assert_eq!(cli.result_unknown, Some(true));
+        assert!(
+            cli.message.contains("could not be confirmed"),
+            "unexpected message: {}",
+            cli.message
+        );
     }
 
     #[test]
@@ -155,6 +219,7 @@ mod tests {
             anyhow::anyhow!("token=abc123 is not valid"),
         );
         assert_eq!(cli.kind, CliErrorKind::InvalidArgs);
+        assert_eq!(cli.code, ErrorCode::InvalidParams);
         assert_eq!(cli.exit_code(), 2);
         assert!(!cli.message.contains("abc123"));
     }

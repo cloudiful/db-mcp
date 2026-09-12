@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rmcp::model::{CallToolResult, ErrorCode, ErrorData, Tool, ToolAnnotations};
+use rmcp::model::{CallToolResponse, CallToolResult, ErrorCode, ErrorData, Tool, ToolAnnotations};
 use serde_json::{Map, Value, json};
 
 use crate::config::{
@@ -118,6 +118,32 @@ async fn tool_error(service: &DbMcpService, name: &str, payload: Value) -> Strin
         RunToolResult::Tool(error) => format!("{error:#}"),
         other => panic!("expected tool-level error, got {other:?}"),
     }
+}
+
+/// Drive a tool-level failure through the response path and return the visible
+/// result plus its structured error document.
+async fn structured_tool_error(
+    service: &DbMcpService,
+    name: &str,
+    payload: Value,
+) -> (CallToolResult, Value) {
+    let connection = payload
+        .get("connection")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let response = service
+        .dispatch_tool(name, Some(args(payload)))
+        .await
+        .into_response_with_connection(connection.as_deref())
+        .expect("tool-level failures must stay tool results, not protocol errors");
+    let CallToolResponse::Complete(result) = response else {
+        panic!("expected a completed tool response");
+    };
+    let structured = result
+        .structured_content
+        .clone()
+        .expect("structured error content");
+    (result, structured)
 }
 
 /// Every tool must carry a description, an object input schema with properties,
@@ -338,6 +364,75 @@ async fn missing_connection_failure_is_tool_level_error() {
     )
     .await;
     assert!(message.contains("missing-conn"));
+}
+
+#[tokio::test]
+async fn missing_connection_tool_error_is_structured() {
+    let service = service(ToolProfile::Canonical).await;
+    let (result, error) = structured_tool_error(
+        &service,
+        "db_query",
+        json!({"connection": "missing-conn", "sql": "select 1"}),
+    )
+    .await;
+
+    assert_eq!(result.is_error, Some(true));
+    assert_eq!(error["code"], "missing_connection");
+    assert_eq!(error["kind"], "missing_connection");
+    assert_eq!(error["connection"], "missing-conn");
+    assert!(
+        error["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("missing-conn")),
+        "unexpected error: {error}"
+    );
+    assert!(error.get("timeout").is_none());
+    assert!(error.get("operation").is_none());
+
+    let visible = result
+        .content
+        .first()
+        .and_then(|block| block.as_text())
+        .map(|text| text.text.clone())
+        .expect("visible error text");
+    let visible: Value = serde_json::from_str(&visible).expect("visible error text is JSON");
+    assert_eq!(visible, error, "visible text must match structured content");
+}
+
+#[tokio::test]
+async fn backend_tool_error_is_structured_and_sanitized() {
+    // `sqlite::memory:` reports a writable driver policy, so canonical db_query
+    // rejects it with a backend policy error that must be structured.
+    let service = service(ToolProfile::Canonical).await;
+    let (result, error) = structured_tool_error(
+        &service,
+        "db_query",
+        json!({"connection": "sqlite", "sql": "select 1"}),
+    )
+    .await;
+
+    assert_eq!(result.is_error, Some(true));
+    assert_eq!(error["code"], "backend_error");
+    assert_eq!(error["kind"], "backend");
+    assert_eq!(error["connection"], "sqlite");
+    assert!(
+        error["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("read-only")),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn protocol_errors_stay_invalid_params_through_the_response_path() {
+    let service = service(ToolProfile::Canonical).await;
+    let response = service
+        .dispatch_tool("does_not_exist", Some(Map::new()))
+        .await
+        .into_response_with_connection(None);
+    let error = response.expect_err("unknown tools must stay protocol errors");
+    assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
+    assert!(error.message.contains("does_not_exist"));
 }
 
 #[tokio::test]

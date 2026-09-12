@@ -5,6 +5,7 @@ use crate::database;
 mod auth;
 mod batch;
 mod canonical;
+pub mod errors;
 mod handlers;
 mod introspect;
 mod legacy;

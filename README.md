@@ -64,7 +64,7 @@ Exactly one of `sql` or `queries` must be present:
 | `queries` | 1–8 items, each `{"sql":"..."}`, run sequentially; execution stops at the first failure |
 | `max_rows` | Optional row cap, bounded by `limits.hardMaxRows` |
 
-`db_query` requires a read-only connection (see [Safety](#safety)). Returns `{"kind":"single"|"batch","data":{...}}`.
+`db_query` requires a read-only connection (see [Safety](#safety)). Returns `{"kind":"single"|"batch","data":{...}}`. A batch failure is still `kind: "batch"` with `status: "failed"`; its `error` keeps the failing `index` and `message` plus the shared stable fields (`code`, `kind`, and optional `operation`/`timeout`/`cancellation`/`resultUnknown`). Later statements are not run.
 
 ### `db_explain`
 
@@ -149,13 +149,13 @@ Success:
 {"kind":"single","data":{"connection":"postgres-dev","result":{"rows":[]}}}
 ```
 
-Errors are a single JSON line on stderr:
+Errors are a single JSON line on stderr. The `error`, `kind`, and `command` fields are stable; `code` is the shared machine-readable code, and the timeout fields appear only when the error chain recorded them:
 
 ```json
-{"error":"...","kind":"invalid_args","command":"query"}
+{"error":"...","kind":"timeout","code":"operation_timeout","command":"query","operation":"execute","timeout":true,"cancellation":"unconfirmed","resultUnknown":true}
 ```
 
-Exit codes:
+Exit codes are unchanged:
 
 | Code | Meaning |
 | --- | --- |
@@ -165,6 +165,29 @@ Exit codes:
 | `3` | Connection not found |
 | `4` | Timeout |
 | `5` | Backend/database error |
+
+## Error contract
+
+MCP tool failures are tool-level results (`isError: true`) whose `structuredContent` (and matching visible text) is the error document below. Malformed arguments and unknown tools remain JSON-RPC `-32602` invalid-params errors, never tool results.
+
+| Field | Meaning |
+| --- | --- |
+| `code` | Stable machine-readable code: `invalid_params`, `missing_connection`, `operation_timeout`, `backend_error`, or `internal_error` |
+| `kind` | Coarse category shared with the CLI exit codes: `invalid_args`, `missing_connection`, `timeout`, `backend`, or `internal` |
+| `message` | Redacted, length-bounded caller-facing summary |
+| `operation` | Optional logical stage that timed out (`acquire`, `connect`, `begin`, `describe`, `execute`, `fetch`, `commit`, `rollback`, `query`, `explain`, `metadata`) |
+| `connection` | Optional connection name from the call |
+| `timeout` | Present and `true` only for deadline timeouts |
+| `cancellation` | Optional `confirmed` or `unconfirmed` |
+| `resultUnknown` | Optional `true` when a timed-out write may or may not have applied |
+
+`limits.queryTimeout` (default `60s`) is a single logical deadline for one operation: acquire, begin, describe, execute/fetch, and commit/rollback share the remaining time instead of restarting per stage, and a batch shares one deadline across all statements. On timeout:
+
+- `cancellation: "confirmed"` means the engine or driver reported the statement stopped (PostgreSQL `statement_timeout` SQLSTATE `57014`, SQLite progress-handler interrupt).
+- `cancellation: "unconfirmed"` means the client deadline fired first; the physical connection is discarded rather than returned to the pool, and the statement may still be running. Oracle always reports `unconfirmed` because the current driver exposes no verifiable interrupt.
+- `resultUnknown: true` means a write may or may not have been applied; do not blindly retry it.
+
+The full cause chain, raw SQL, and DSN credentials never enter an MCP or CLI response; the redacted chain goes to the server log only. Diagnostics (`db_connections` `diagnose`, `connections list --deep`) still report the redacted probe chain so failures stay debuggable.
 
 ## Safety
 

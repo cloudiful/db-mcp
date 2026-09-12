@@ -173,6 +173,16 @@ pub struct ExecuteQueriesResult {
 pub struct ExecuteQueriesError {
     pub index: usize,
     pub message: String,
+    pub code: String,
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancellation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_unknown: Option<bool>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, JsonSchema)]

@@ -14,6 +14,11 @@ use std::{
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// A deterministic CPU-bound read-only query that outlives a short test budget.
+const SLOW_SQL: &str = "with recursive counter(value) as (\
+    select 1 union all select value + 1 from counter where value < 5000000\
+) select count(*) as value from counter";
+
 fn temp_dir(label: &str) -> PathBuf {
     let suffix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -35,6 +40,28 @@ fn write_config(dir: &Path, name: &str, dsn: &str, read_only: bool) -> PathBuf {
                 "name": "sqlite",
                 "driver": "sqlite",
                 "sqlite": { "dsn": dsn, "readOnly": read_only },
+            }
+        ]
+    });
+    let path = dir.join(name);
+    fs::write(
+        &path,
+        serde_json::to_string_pretty(&config).expect("serialize config"),
+    )
+    .expect("write config");
+    path
+}
+
+/// A read-only config with an explicit `limits.queryTimeout`, for exercising
+/// the timeout error contract end to end.
+fn write_timeout_config(dir: &Path, name: &str, dsn: &str, query_timeout: &str) -> PathBuf {
+    let config = json!({
+        "limits": { "queryTimeout": query_timeout },
+        "connections": [
+            {
+                "name": "sqlite",
+                "driver": "sqlite",
+                "sqlite": { "dsn": dsn, "readOnly": true },
             }
         ]
     });
@@ -369,6 +396,7 @@ fn errors_use_documented_exit_codes() {
     );
     let error = stderr_json(&output);
     assert_eq!(error["kind"], "missing_connection");
+    assert_eq!(error["code"], "missing_connection");
     assert_eq!(error["command"], "query");
 
     // Writable connection is refused by the read-only gate -> 2.
@@ -383,6 +411,7 @@ fn errors_use_documented_exit_codes() {
     );
     let error = stderr_json(&output);
     assert_eq!(error["kind"], "invalid_args");
+    assert_eq!(error["code"], "invalid_params");
     assert!(
         error["error"].as_str().unwrap().contains("read-only"),
         "unexpected error: {error}"
@@ -415,4 +444,70 @@ fn errors_use_documented_exit_codes() {
         &["--format", "yaml", "connections", "list"],
     );
     assert_exit(&output, 2);
+}
+
+#[test]
+fn backend_errors_are_structured() {
+    let fixture = Fixture::new("backend");
+    let output = dbmcp(
+        fixture.ro_config(),
+        &[
+            "query",
+            "--connection",
+            "sqlite",
+            "--sql",
+            "select * from missing_cli_table",
+        ],
+    );
+    assert_exit(&output, 5);
+    assert!(
+        output.stdout.is_empty(),
+        "stdout must stay clean on failure"
+    );
+    let error = stderr_json(&output);
+    assert_eq!(error["kind"], "backend");
+    assert_eq!(error["code"], "backend_error");
+    assert_eq!(error["command"], "query");
+    assert!(
+        error["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("missing_cli_table")),
+        "unexpected error: {error}"
+    );
+    assert!(error.get("timeout").is_none());
+}
+
+#[test]
+fn timeout_errors_are_structured() {
+    let fixture = Fixture::new("timeout");
+    let read_only = format!(
+        "sqlite://{}?mode=ro",
+        fixture.dir.join("fixture.db").display()
+    );
+    let config = write_timeout_config(&fixture.dir, "timeout.json", &read_only, "300ms");
+
+    let output = dbmcp(
+        &config,
+        &["query", "--connection", "sqlite", "--sql", SLOW_SQL],
+    );
+    assert_exit(&output, 4);
+    assert!(
+        output.stdout.is_empty(),
+        "stdout must stay clean on failure"
+    );
+    let error = stderr_json(&output);
+    assert_eq!(error["kind"], "timeout");
+    assert_eq!(error["code"], "operation_timeout");
+    assert_eq!(error["timeout"], true);
+    assert_eq!(error["command"], "query");
+    assert!(
+        error["cancellation"].is_string(),
+        "timeout must carry a typed cancellation state: {error}"
+    );
+    assert!(
+        error["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("timeout")),
+        "unexpected error: {error}"
+    );
 }

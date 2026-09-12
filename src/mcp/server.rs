@@ -135,15 +135,35 @@ impl RunToolResult {
         ))
     }
 
-    fn into_response(self) -> std::result::Result<CallToolResponse, ErrorData> {
+    /// Tool-level failures become a structured error document (stable `code`,
+    /// `kind`, redacted `message`, and optional typed timeout detail) on the
+    /// result, while `Protocol` stays a JSON-RPC error so the `-32602` boundary
+    /// for malformed arguments and unknown tools is preserved. The full cause
+    /// chain is written to the controlled log rather than the response.
+    pub(super) fn into_response_with_connection(
+        self,
+        connection: Option<&str>,
+    ) -> std::result::Result<CallToolResponse, ErrorData> {
         match self {
             Self::Ok(result) => Ok(result.into()),
             Self::Protocol(error) => Err(error),
-            // Connection, database, query, and diagnostic failures are
-            // tool-level errors so the client displays the useful message.
-            Self::Tool(error) => Ok(database::call_tool_error(format!("{error:#}")).into()),
+            Self::Tool(error) => Ok(database::call_tool_error_json(
+                super::errors::error_json_value(&error, connection),
+            )
+            .into()),
         }
     }
+}
+
+/// The connection name a tool call targets, used to label tool-level errors.
+/// Every database tool takes an optional top-level `connection` argument.
+fn request_connection(arguments: Option<&Map<String, Value>>) -> Option<String> {
+    arguments?
+        .get("connection")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
 }
 
 impl ServerHandler for DbMcpService {
@@ -320,11 +340,13 @@ impl ServerHandler for DbMcpService {
     ) -> impl Future<Output = Result<CallToolResponse, ErrorData>> + Send + '_ {
         let state = self.state.clone();
         async move {
+            let name = request.name.to_string();
+            let connection = request_connection(request.arguments.as_ref());
             let service = Self { state };
             service
-                .dispatch_tool(request.name.as_ref(), request.arguments)
+                .dispatch_tool(&name, request.arguments)
                 .await
-                .into_response()
+                .into_response_with_connection(connection.as_deref())
         }
     }
 }
