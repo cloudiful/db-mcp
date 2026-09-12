@@ -48,8 +48,26 @@ pub(super) async fn execute_query_within(
         result_to_query_result(result, applied_max_rows, limits, started)
     }
     .await;
-    release_session(&session, &deadline).await;
-    outcome
+    let cancelled = outcome
+        .as_ref()
+        .err()
+        .is_some_and(|error| timeout_operation(error).is_some());
+    release_session(&session, &deadline, cancelled).await;
+    match outcome {
+        Err(err) if cancelled => {
+            // `oracle-rs` 0.1.7 exposes no public BREAK/INTERRUPT, so the
+            // dedicated session is hard-closed and the cancellation is reported
+            // as unconfirmed rather than faked as a confirmed stop.
+            let operation = timeout_operation(&err).unwrap_or(Operation::Query);
+            Err(attach_cancellation(
+                err,
+                operation,
+                Cancellation::Unconfirmed,
+                !conn.config.read_only,
+            ))
+        }
+        other => other,
+    }
 }
 
 pub(super) async fn explain_query(
@@ -113,16 +131,31 @@ pub(super) async fn explain_query_within(
         })
     }
     .await;
-    release_session(&conn, &deadline).await;
-    outcome
+    let cancelled = outcome
+        .as_ref()
+        .err()
+        .is_some_and(|error| timeout_operation(error).is_some());
+    release_session(&conn, &deadline, cancelled).await;
+    match outcome {
+        Err(err) if cancelled => Err(attach_cancellation(
+            err,
+            Operation::Explain,
+            Cancellation::Unconfirmed,
+            false,
+        )),
+        other => other,
+    }
 }
 
-/// Best-effort bounded rollback and close. After a client-side timeout the
-/// session protocol state may be unknown, so the rollback is bounded and the
-/// dedicated session is closed rather than reused.
-async fn release_session(session: &oracle_rs::Connection, deadline: &Deadline) {
+/// Best-effort bounded cleanup for a dedicated Oracle session. After a
+/// client-side timeout the protocol state is unknown, so the rollback is
+/// skipped and the session is hard-closed; it is never reused. Sessions are not
+/// pooled, so an unconfirmed state cannot leak into a shared connection.
+async fn release_session(session: &oracle_rs::Connection, deadline: &Deadline, cancelled: bool) {
     let budget = deadline.remaining().max(CLEANUP_TIMEOUT);
-    let _ = tokio::time::timeout(budget, session.rollback()).await;
+    if !cancelled {
+        let _ = tokio::time::timeout(budget, session.rollback()).await;
+    }
     let _ = tokio::time::timeout(budget, session.close()).await;
 }
 

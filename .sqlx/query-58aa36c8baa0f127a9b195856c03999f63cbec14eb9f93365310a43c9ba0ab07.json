@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select set_config('statement_timeout', $1, true)\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "set_config",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "58aa36c8baa0f127a9b195856c03999f63cbec14eb9f93365310a43c9ba0ab07"
+}

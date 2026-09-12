@@ -7,8 +7,8 @@ use sqlx::{Column, Connection, Executor, Row, SqlSafeStr, TypeInfo};
 use std::time::Instant;
 
 use super::{
-    CLEANUP_TIMEOUT, Deadline, ExplainResultData, Limits, Operation, QueryColumn, QueryResult,
-    RowCollector, empty_result,
+    CLEANUP_TIMEOUT, Cancellation, Deadline, ExplainResultData, Limits, Operation, QueryColumn,
+    QueryResult, RowCollector, attach_cancellation, empty_result, timeout_operation,
 };
 
 pub async fn execute_query(
@@ -49,23 +49,52 @@ pub async fn execute_query_within(
                 )
                 .await?;
         }
+        set_statement_timeout(&mut tx, &deadline).await?;
         execute_sql_with_connection(&mut tx, sql, requested_max_rows, limits, &deadline).await
     }
     .await;
 
     match outcome {
+        Err(err) if timeout_operation(&err).is_some() => {
+            // Only the client-side deadline fired: the protocol future was
+            // dropped mid-statement, so the server state is unknown. Bound the
+            // rollback, then evict the physical connection so it can never be
+            // returned to the pool in-flight.
+            let _ = deadline
+                .run(Operation::Rollback, "postgres rollback", tx.rollback())
+                .await;
+            evict_connection(conn).await;
+            let operation = timeout_operation(&err).unwrap_or(Operation::Query);
+            Err(attach_cancellation(
+                err,
+                operation,
+                Cancellation::Unconfirmed,
+                !read_only,
+            ))
+        }
         Err(err) => {
             // A failed statement must never be committed. Bound the rollback;
             // an unconfirmed rollback leaves the physical connection in an
             // unknown state, so it is closed instead of returned to the pool.
-            if deadline
+            let rolled_back = deadline
                 .run(Operation::Rollback, "postgres rollback", tx.rollback())
                 .await
-                .is_err()
-            {
+                .is_ok();
+            if !rolled_back {
                 evict_connection(conn).await;
             }
-            Err(err)
+            if is_query_canceled(&err) {
+                // SQLSTATE 57014 means the server stopped the statement (for
+                // example the transaction statement_timeout set above).
+                Err(attach_cancellation(
+                    err,
+                    Operation::Query,
+                    Cancellation::Confirmed,
+                    !read_only,
+                ))
+            } else {
+                Err(err)
+            }
         }
         Ok(value) if read_only => {
             if deadline
@@ -179,6 +208,7 @@ pub async fn explain_query_within(
                 )
                 .await?;
         }
+        set_statement_timeout(&mut tx, &deadline).await?;
         let rows = deadline
             .run(
                 Operation::Explain,
@@ -207,16 +237,56 @@ pub async fn explain_query_within(
     }
     .await;
 
-    // EXPLAIN never commits; always roll back so any plan writes are discarded.
-    // A failed rollback leaves the connection state unconfirmed.
-    if deadline
-        .run(Operation::Rollback, "postgres rollback", tx.rollback())
-        .await
-        .is_err()
-    {
-        evict_connection(conn).await;
+    match outcome {
+        Err(err) if timeout_operation(&err).is_some() => {
+            // Client deadline: drop the protocol future and discard the
+            // connection because the server may still be executing the plan.
+            let _ = deadline
+                .run(Operation::Rollback, "postgres rollback", tx.rollback())
+                .await;
+            evict_connection(conn).await;
+            let operation = timeout_operation(&err).unwrap_or(Operation::Explain);
+            Err(attach_cancellation(
+                err,
+                operation,
+                Cancellation::Unconfirmed,
+                false,
+            ))
+        }
+        Err(err) => {
+            // EXPLAIN never commits; always roll back so any plan writes are
+            // discarded. A failed rollback leaves the connection unconfirmed.
+            let rolled_back = deadline
+                .run(Operation::Rollback, "postgres rollback", tx.rollback())
+                .await
+                .is_ok();
+            if !rolled_back {
+                evict_connection(conn).await;
+            }
+            if is_query_canceled(&err) {
+                Err(attach_cancellation(
+                    err,
+                    Operation::Explain,
+                    Cancellation::Confirmed,
+                    false,
+                ))
+            } else {
+                Err(err)
+            }
+        }
+        Ok(value) => {
+            // A successful EXPLAIN is still rolled back so plan rows never
+            // persist.
+            if deadline
+                .run(Operation::Rollback, "postgres rollback", tx.rollback())
+                .await
+                .is_err()
+            {
+                evict_connection(conn).await;
+            }
+            Ok(value)
+        }
     }
-    outcome
 }
 
 async fn execute_query_rows(
@@ -265,6 +335,47 @@ async fn execute_query_rows(
     }
 
     Ok(collector.finish())
+}
+
+/// PostgreSQL SQLSTATE for a cancelled statement, which includes a server-side
+/// `statement_timeout` expiry.
+const QUERY_CANCELED_SQLSTATE: &str = "57014";
+
+/// True when the error chain carries a server-confirmed query cancellation.
+fn is_query_canceled(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause.downcast_ref::<sqlx::Error>().is_some_and(|error| {
+            matches!(
+                error,
+                sqlx::Error::Database(database)
+                    if database.code().as_deref() == Some(QUERY_CANCELED_SQLSTATE)
+            )
+        })
+    })
+}
+
+/// Set a transaction-local server-side statement timeout just inside the client
+/// deadline, so the server normally cancels before the client drops the
+/// protocol future and the cancellation can be confirmed.
+async fn set_statement_timeout(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    deadline: &Deadline,
+) -> Result<()> {
+    let remaining = deadline.interrupt_remaining();
+    if remaining.is_zero() {
+        return Ok(());
+    }
+    deadline
+        .run(
+            Operation::Configure,
+            "postgres set statement timeout",
+            tx.execute(sqlx::query_file!(
+                "sql/postgres/set_statement_timeout.sql",
+                remaining.as_millis().max(1).to_string()
+            )),
+        )
+        .await?;
+    Ok(())
 }
 
 /// Close a physical connection whose transaction state cannot be confirmed so

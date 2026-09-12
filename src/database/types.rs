@@ -13,6 +13,16 @@ use crate::config;
 /// allowed to wait unbounded.
 pub const CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Lead time by which a cooperative driver-level interrupt (SQLite progress
+/// handler) or a server-side statement timeout fires before the hard client
+/// deadline. The head start lets the engine confirm the cancellation before
+/// the client-side timeout drops the protocol future.
+pub const INTERRUPT_GRACE: Duration = Duration::from_millis(50);
+
+/// Approximate SQLite virtual-machine instructions between progress-handler
+/// callbacks. Small enough to interrupt promptly, large enough to stay cheap.
+pub const SQLITE_PROGRESS_INTERVAL: i32 = 10_000;
+
 use super::diagnostics::{ConnectionDiagnostic, ProbeCheck};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -234,6 +244,7 @@ pub enum Operation {
     Ping,
     Begin,
     Describe,
+    Configure,
     Execute,
     Fetch,
     Commit,
@@ -251,6 +262,7 @@ impl Operation {
             Self::Ping => "ping",
             Self::Begin => "begin",
             Self::Describe => "describe",
+            Self::Configure => "configure",
             Self::Execute => "execute",
             Self::Fetch => "fetch",
             Self::Commit => "commit",
@@ -297,6 +309,104 @@ impl fmt::Display for OperationTimeout {
 
 impl std::error::Error for OperationTimeout {}
 
+/// Whether an engine-side cancellation was observed. A deadline that only
+/// expires on the client side proves nothing about the SQL, so callers must
+/// never report an unconfirmed cancellation as if the statement had stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cancellation {
+    /// The engine or driver reported that the statement stopped (for example a
+    /// PostgreSQL statement-timeout cancel or a SQLite progress-handler
+    /// interrupt).
+    Confirmed,
+    /// The statement state could not be confirmed. The physical connection was
+    /// closed or discarded, and the statement may still be running.
+    Unconfirmed,
+}
+
+impl Cancellation {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Confirmed => "confirmed",
+            Self::Unconfirmed => "unconfirmed",
+        }
+    }
+}
+
+/// Recorded outcome of a deadline-driven cancellation attempt. It travels in
+/// the error chain so later layers can report it without matching strings.
+#[derive(Debug, Clone, Copy)]
+pub struct CancellationReport {
+    operation: Operation,
+    cancellation: Cancellation,
+    result_unknown: bool,
+}
+
+impl CancellationReport {
+    pub fn new(operation: Operation, cancellation: Cancellation, result_unknown: bool) -> Self {
+        Self {
+            operation,
+            cancellation,
+            result_unknown,
+        }
+    }
+
+    pub fn operation(&self) -> Operation {
+        self.operation
+    }
+
+    pub fn cancellation(&self) -> Cancellation {
+        self.cancellation
+    }
+
+    /// True when the statement may have modified data and its outcome cannot be
+    /// confirmed, so the caller must not blindly retry a write.
+    pub fn result_unknown(&self) -> bool {
+        self.result_unknown
+    }
+}
+
+impl fmt::Display for CancellationReport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} timeout; cancellation={}",
+            self.operation.as_str(),
+            self.cancellation.as_str()
+        )?;
+        match self.cancellation {
+            Cancellation::Confirmed => write!(f, " (statement stopped by the database)")?,
+            Cancellation::Unconfirmed => write!(f, " (statement may still be running)")?,
+        }
+        if self.result_unknown {
+            write!(f, "; result may be unknown")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for CancellationReport {}
+
+/// Attach a cancellation outcome to an error chain.
+pub fn attach_cancellation(
+    error: anyhow::Error,
+    operation: Operation,
+    cancellation: Cancellation,
+    result_unknown: bool,
+) -> anyhow::Error {
+    error.context(CancellationReport::new(
+        operation,
+        cancellation,
+        result_unknown,
+    ))
+}
+
+/// Read the recorded cancellation outcome from an error chain, if a deadline
+/// cancellation was classified. Uses `anyhow`'s downcast, which also traverses
+/// context layers attached on top of the report.
+pub fn cancellation_report(error: &anyhow::Error) -> Option<CancellationReport> {
+    error.downcast_ref::<CancellationReport>().copied()
+}
+
 /// A single logical-operation deadline. Nested stages share one deadline: each
 /// wait gets only the remaining time and never restarts the timer.
 #[derive(Debug, Clone, Copy)]
@@ -326,6 +436,23 @@ impl Deadline {
         self.remaining().is_zero()
     }
 
+    /// Moment at which a cooperative engine-side interrupt should fire: just
+    /// ahead of the hard client deadline so the engine can confirm the
+    /// cancellation instead of the client dropping an in-flight future.
+    pub fn interrupt_at(&self) -> tokio::time::Instant {
+        self.at - INTERRUPT_GRACE.min(self.budget / 4)
+    }
+
+    /// Time left before a cooperative engine-side interrupt should fire.
+    pub fn interrupt_remaining(&self) -> Duration {
+        self.interrupt_at()
+            .saturating_duration_since(tokio::time::Instant::now())
+    }
+
+    pub fn interrupt_expired(&self) -> bool {
+        self.interrupt_remaining().is_zero()
+    }
+
     /// Run `fut` within the remaining budget. Expiry produces a typed
     /// [`OperationTimeout`] wrapped in `{label} timeout` context; a functional
     /// failure keeps the existing `{label} failed` context chain.
@@ -347,13 +474,18 @@ impl Deadline {
 }
 
 /// Classify an error as a timeout and return the bounded stage, walking the
-/// full context chain so wrapped errors keep their typed information.
+/// full context chain so wrapped errors keep their typed information. When no
+/// precise [`OperationTimeout`] is present, a classified cancellation still
+/// counts as a timeout.
 pub fn timeout_operation(error: &anyhow::Error) -> Option<Operation> {
-    error.chain().find_map(|cause| {
-        cause
-            .downcast_ref::<OperationTimeout>()
-            .map(OperationTimeout::operation)
-    })
+    error
+        .chain()
+        .find_map(|cause| {
+            cause
+                .downcast_ref::<OperationTimeout>()
+                .map(OperationTimeout::operation)
+        })
+        .or_else(|| cancellation_report(error).map(|report| report.operation()))
 }
 
 #[async_trait]
@@ -485,5 +617,72 @@ mod tests {
         };
         assert_eq!(limits.probe_budget(), Duration::from_secs(8));
         assert_eq!(limits.batch_deadline().budget(), Duration::from_secs(2));
+    }
+
+    #[test]
+    fn interrupt_deadline_precedes_the_client_deadline_with_a_grace() {
+        let deadline = Deadline::after(Duration::from_secs(1));
+        assert!(!deadline.interrupt_expired());
+        assert!(deadline.interrupt_remaining() < Duration::from_secs(1));
+        assert!(deadline.interrupt_remaining() > Duration::from_millis(900));
+
+        // Very short budgets keep a quarter of the budget so a fast query is
+        // not interrupted immediately.
+        let tiny = Deadline::after(Duration::from_millis(8));
+        assert!(tiny.interrupt_remaining() <= Duration::from_millis(6));
+    }
+
+    #[test]
+    fn confirmed_cancellation_is_typed_and_classified_as_timeout() {
+        let error = attach_cancellation(
+            anyhow::anyhow!("driver reported interrupt"),
+            Operation::Fetch,
+            Cancellation::Confirmed,
+            false,
+        );
+        let report = cancellation_report(&error).expect("report should round-trip");
+        assert_eq!(report.operation(), Operation::Fetch);
+        assert_eq!(report.cancellation(), Cancellation::Confirmed);
+        assert!(!report.result_unknown());
+        assert_eq!(timeout_operation(&error), Some(Operation::Fetch));
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("timeout"), "unexpected: {rendered}");
+        assert!(rendered.contains("confirmed"), "unexpected: {rendered}");
+    }
+
+    #[test]
+    fn unconfirmed_write_cancellation_marks_the_result_unknown() {
+        let error = attach_cancellation(
+            anyhow::anyhow!("client deadline elapsed"),
+            Operation::Execute,
+            Cancellation::Unconfirmed,
+            true,
+        );
+        let report = cancellation_report(&error).expect("report should round-trip");
+        assert_eq!(report.cancellation(), Cancellation::Unconfirmed);
+        assert!(report.result_unknown());
+        let rendered = format!("{error:#}");
+        assert!(
+            rendered.contains("may still be running"),
+            "unexpected: {rendered}"
+        );
+        assert!(
+            rendered.contains("result may be unknown"),
+            "unexpected: {rendered}"
+        );
+    }
+
+    #[test]
+    fn timeout_operation_keeps_precedence_over_cancellation_report() {
+        let error = anyhow::Error::new(OperationTimeout::new(
+            Operation::Execute,
+            Duration::from_millis(5),
+        ))
+        .context(CancellationReport::new(
+            Operation::Query,
+            Cancellation::Unconfirmed,
+            false,
+        ));
+        assert_eq!(timeout_operation(&error), Some(Operation::Execute));
     }
 }

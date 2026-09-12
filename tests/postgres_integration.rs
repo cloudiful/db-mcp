@@ -1,6 +1,6 @@
 use db_mcp::{
     config::{Config, ConnectionConfig, LimitsConfig, PostgresConfig, ServerConfig},
-    database::Manager,
+    database::{Cancellation, Manager, cancellation_report},
 };
 
 fn postgres_dsn() -> Option<String> {
@@ -40,6 +40,12 @@ fn write_enabled_test_config() -> Option<Config> {
 
 fn short_timeout_test_config() -> Option<Config> {
     let mut cfg = test_config()?;
+    cfg.limits.query_timeout = "1s".to_string();
+    Some(cfg)
+}
+
+fn write_enabled_short_timeout_test_config() -> Option<Config> {
+    let mut cfg = write_enabled_test_config()?;
     cfg.limits.query_timeout = "1s".to_string();
     Some(cfg)
 }
@@ -309,6 +315,14 @@ async fn postgres_timeout_is_bounded_and_the_pool_recovers() {
         format!("{err:#}").contains("timeout"),
         "unexpected error: {err:#}"
     );
+    // The transaction-local statement_timeout fires just inside the client
+    // deadline, so the server confirms it stopped the statement.
+    let report = cancellation_report(&err).expect("timeout should record a cancellation");
+    assert_eq!(
+        report.cancellation(),
+        Cancellation::Confirmed,
+        "the server statement_timeout should confirm the cancel: {err:#}"
+    );
 
     // The timed-out transaction is never committed; the unconfirmed in-flight
     // connection is evicted instead of being returned to the pool.
@@ -319,6 +333,26 @@ async fn postgres_timeout_is_bounded_and_the_pool_recovers() {
     assert_eq!(
         after.rows[0].get("value").and_then(|value| value.as_i64()),
         Some(1)
+    );
+}
+
+#[tokio::test]
+async fn postgres_write_capable_timeout_marks_the_result_unknown() {
+    let Some(cfg) = write_enabled_short_timeout_test_config() else {
+        eprintln!("{SKIP_MESSAGE}");
+        return;
+    };
+    let manager = Manager::new(&cfg).await.expect("manager init");
+    let conn = manager.connection(Some("postgres")).expect("connection");
+
+    let err = conn
+        .execute_query("select pg_sleep(5)", 10, manager.limits())
+        .await
+        .expect_err("pg_sleep should exceed the logical deadline");
+    let report = cancellation_report(&err).expect("timeout should record a cancellation");
+    assert!(
+        report.result_unknown(),
+        "a write-capable connection must not promise the result: {err:#}"
     );
 }
 

@@ -81,8 +81,23 @@ impl OracleConnection {
                 conn.query(sql, &binds),
             )
             .await;
+        let cancelled = result
+            .as_ref()
+            .err()
+            .is_some_and(|error| timeout_operation(error).is_some());
         close_connection(&conn, deadline).await;
-        result
+        match result {
+            Err(err) if cancelled => {
+                let operation = timeout_operation(&err).unwrap_or(Operation::Query);
+                Err(attach_cancellation(
+                    err,
+                    operation,
+                    Cancellation::Unconfirmed,
+                    !self.config.read_only,
+                ))
+            }
+            other => other,
+        }
     }
 
     pub(super) async fn query_optional_string(&self, sql: &str) -> Result<Option<String>> {

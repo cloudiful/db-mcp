@@ -8,8 +8,9 @@ use sqlx::{Column, Executor, Row, SqlSafeStr, TypeInfo, ValueRef};
 use std::time::Instant;
 
 use super::{
-    CLEANUP_TIMEOUT, Deadline, Limits, Operation, QueryColumn, QueryResult, RowCollector,
-    empty_result, timeout_operation,
+    CLEANUP_TIMEOUT, Cancellation, Deadline, Limits, Operation, QueryColumn, QueryResult,
+    RowCollector, SQLITE_PROGRESS_INTERVAL, attach_cancellation, cancellation_report, empty_result,
+    timeout_operation,
 };
 
 // SQLx checked query macros resolve one database per crate from the compile-time
@@ -44,14 +45,51 @@ pub async fn collect_rows_within(
     let mut conn = deadline
         .run(Operation::Acquire, "sqlite acquire", pool.acquire())
         .await?;
+    // Driver-level cancellation: SQLite invokes the progress handler during
+    // long-running VM steps. It is armed just inside the client deadline, so an
+    // interrupt normally confirms the stop before the client timeout drops the
+    // in-flight future. The handle is locked while the handler is installed so
+    // the worker is quiescent.
+    {
+        let mut handle = deadline
+            .run(
+                Operation::Configure,
+                "sqlite lock handle",
+                conn.lock_handle(),
+            )
+            .await?;
+        handle.set_progress_handler(SQLITE_PROGRESS_INTERVAL, move || {
+            !deadline.interrupt_expired()
+        });
+    }
     let result =
         execute_sql_with_connection(&mut conn, sql, requested_max_rows, limits, &deadline).await;
-    if let Err(err) = &result
-        && timeout_operation(err).is_some()
-    {
-        // A driver-level timeout leaves the statement state unknown on this
-        // physical connection; close it instead of returning it to the pool.
+    let unconfirmed = result.as_ref().err().is_some_and(|error| {
+        matches!(
+            cancellation_report(error).map(|report| report.cancellation()),
+            Some(Cancellation::Unconfirmed)
+        )
+    });
+    if unconfirmed {
+        // The client-side timeout dropped the future while the worker may still
+        // be stepping. Leave the handler armed so it stops the worker, and
+        // discard the connection instead of returning it to the pool.
         evict_connection(conn).await;
+    } else {
+        // The command completed and the handler is cleared while the worker is
+        // locked out, so the connection can be reused cleanly. A failed or
+        // timed-out lock means the worker is unusable, so the connection is
+        // discarded.
+        let cleared = match tokio::time::timeout(CLEANUP_TIMEOUT, conn.lock_handle()).await {
+            Ok(Ok(mut handle)) => {
+                handle.remove_progress_handler();
+                true
+            }
+            Ok(Err(_)) | Err(_) => false,
+        };
+        if !cleared {
+            evict_connection(conn).await;
+        }
     }
     result
 }
@@ -69,7 +107,8 @@ pub async fn execute_sql_with_connection(
             "sqlite describe",
             (&mut *conn).describe(sqlx::AssertSqlSafe(sql).into_sql_str()),
         )
-        .await?;
+        .await
+        .map_err(|error| classify_deadline_error(error, Operation::Describe, false))?;
     if describe.columns().is_empty() {
         let started = Instant::now();
         let result = deadline
@@ -78,7 +117,8 @@ pub async fn execute_sql_with_connection(
                 "query",
                 (&mut *conn).execute(sqlx::AssertSqlSafe(sql)),
             )
-            .await?;
+            .await
+            .map_err(|error| classify_deadline_error(error, Operation::Execute, true))?;
         return Ok(empty_result(
             result.rows_affected() as usize,
             limits,
@@ -104,6 +144,7 @@ pub async fn execute_sql_with_connection(
         columns,
     )
     .await
+    .map_err(|error| classify_deadline_error(error, Operation::Fetch, false))
 }
 
 async fn collect_rows_with_connection(
@@ -137,6 +178,40 @@ async fn collect_rows_with_connection(
     }
 
     Ok(collector.finish())
+}
+
+/// SQLite extended result code reported when the progress handler aborts the
+/// statement (SQLITE_INTERRUPT). `sqlx` exposes the numeric code, not a typed
+/// variant.
+const SQLITE_INTERRUPT_CODE: &str = "9";
+
+fn is_sqlite_interrupt(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause.downcast_ref::<sqlx::Error>().is_some_and(|error| {
+            matches!(
+                error,
+                sqlx::Error::Database(database)
+                    if database.code().as_deref() == Some(SQLITE_INTERRUPT_CODE)
+            )
+        })
+    })
+}
+
+/// Classify a stage error once the logical deadline was reached. A driver
+/// interrupt is a confirmed stop; a client-side expiry leaves the statement
+/// state unknown. Ordinary errors pass through untouched.
+fn classify_deadline_error(
+    error: anyhow::Error,
+    operation: Operation,
+    result_unknown: bool,
+) -> anyhow::Error {
+    if is_sqlite_interrupt(&error) {
+        attach_cancellation(error, operation, Cancellation::Confirmed, result_unknown)
+    } else if timeout_operation(&error).is_some() {
+        attach_cancellation(error, operation, Cancellation::Unconfirmed, result_unknown)
+    } else {
+        error
+    }
 }
 
 async fn evict_connection(conn: PoolConnection<sqlx::Sqlite>) {
