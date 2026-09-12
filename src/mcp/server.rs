@@ -151,6 +151,15 @@ impl ServerHandler for DbMcpService {
         database::build_server_info(&self.state.cfg.server.name, &self.state.cfg.server.version)
     }
 
+    async fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> std::result::Result<InitializeResult, ErrorData> {
+        context.peer.set_peer_info(request.clone());
+        self.negotiate_initialize(&request)
+    }
+
     fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
