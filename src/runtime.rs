@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use axum::{Json, Router, middleware, routing::get};
 use std::env;
+use std::process::ExitCode;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::{Any, CorsLayer};
@@ -15,7 +16,50 @@ pub fn init_tracing() {
     let default_filter = if debug_requested() { "debug" } else { "info" };
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_filter));
-    let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .try_init();
+}
+
+/// Entry point that keeps `serve` (explicit or implicit) on the MCP path and
+/// routes every other subcommand through the progressive CLI.
+pub async fn dispatch(mut cli: config::Cli) -> ExitCode {
+    let is_serve = matches!(
+        cli.command.as_ref(),
+        None | Some(crate::cli::Command::Serve(_))
+    );
+    if is_serve {
+        return match run(cli).await {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                eprintln!("db-mcp failed: {err}");
+                for cause in err.chain().skip(1) {
+                    eprintln!("caused by: {cause}");
+                }
+                ExitCode::FAILURE
+            }
+        };
+    }
+
+    let command = cli.command.take().expect("checked non-serve command");
+    let name = crate::cli::command_name(&command);
+    let format = cli.format;
+    let cfg = match config::Config::load(&cli) {
+        Ok(cfg) => cfg,
+        Err(err) => {
+            let error = crate::cli::CliError::with_kind(crate::cli::CliErrorKind::InvalidArgs, err);
+            eprintln!("{}", crate::cli::error_json(name, &error));
+            return ExitCode::from(error.exit_code());
+        }
+    };
+    match crate::cli::run(command, format, cfg).await {
+        Ok(code) => code,
+        Err(error) => {
+            eprintln!("{}", crate::cli::error_json(name, &error));
+            ExitCode::from(error.exit_code())
+        }
+    }
 }
 
 pub async fn run(cli: config::Cli) -> Result<()> {

@@ -3,6 +3,8 @@ use serde::Deserialize;
 
 use crate::database;
 
+pub use crate::config::MAX_BATCH_QUERIES;
+
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ListConnectionsInput {
@@ -60,8 +62,6 @@ pub struct ExecuteQueryInput {
     pub max_rows: Option<usize>,
 }
 
-pub const MAX_BATCH_QUERIES: usize = 8;
-
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecuteQueryItem {
@@ -73,7 +73,7 @@ pub struct ExecuteQueryItem {
 #[serde(rename_all = "camelCase")]
 pub struct ExecuteQueriesInput {
     pub connection: Option<String>,
-    #[schemars(length(min = 1, max = 8))]
+    #[schemars(length(min = 1, max = MAX_BATCH_QUERIES))]
     pub queries: Vec<ExecuteQueryItem>,
 }
 

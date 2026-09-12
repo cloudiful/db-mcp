@@ -1,6 +1,6 @@
 [package]
 name = "db-mcp"
-version = "0.1.0"
+version = "0.1.6"
 edition = "2024"
 rust-version = "1.94"
 license = "Apache-2.0"
@@ -12,27 +12,27 @@ name = "dbmcp"
 path = "src/main.rs"
 
 [dependencies]
-anyhow = "1"
-async-trait = "0.1"
+anyhow = "1.0.104"
+async-trait = "0.1.92"
 axum = "0.8.9"
-base64 = "0.22.1"
-chrono = { version = "0.4.44", default-features = false, features = ["clock"] }
-clap = { version = "4.6.1", features = ["derive", "env"] }
-futures-util = "0.3.32"
-humantime = "2.3.0"
+base64 = "0.23.1"
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+clap = { version = "4.6.6", features = ["derive", "env"] }
+futures-util = "0.3.34"
+humantime = "2.4.0"
 oracle-rs = "0.1.7"
-rmcp = { version = "3.1.0", default-features = false, features = ["macros", "server", "schemars", "transport-io", "transport-streamable-http-server", "transport-streamable-http-server-session"] }
-schemars = "1.2.1"
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
+rmcp = { version = "3.3.0", default-features = false, features = ["macros", "server", "schemars", "transport-io", "transport-streamable-http-server", "transport-streamable-http-server-session"] }
+schemars = "1.2.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "tls-rustls-ring", "postgres", "sqlite", "macros", "sqlx-toml"] }
-tokio = { version = "1.52.3", features = ["macros", "net", "rt-multi-thread", "signal", "time"] }
-tokio-util = { version = "0.7", features = ["rt"] }
-tower = "0.5"
-tower-http = { version = "0.6", features = ["cors"] }
+tokio = { version = "1.53.1", features = ["macros", "net", "rt-multi-thread", "signal", "time"] }
+tokio-util = { version = "0.7.19", features = ["rt"] }
+tower = "0.5.3"
+tower-http = { version = "0.7.1", features = ["cors"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 url = "2.5.8"
 
 [dev-dependencies]
-rmcp = { version = "3.1.0", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
+rmcp = { version = "3.3.0", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }

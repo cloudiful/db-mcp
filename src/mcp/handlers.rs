@@ -1,7 +1,6 @@
 use anyhow::Result;
-use rmcp::model::CallToolResult;
 
-use crate::{database, mcp_types::*};
+use crate::mcp_types::*;
 
 use super::DbMcpService;
 use super::batch::execute_query_batch;
@@ -10,10 +9,13 @@ impl DbMcpService {
     pub(super) async fn list_connections(
         &self,
         input: ListConnectionsInput,
-    ) -> Result<CallToolResult> {
-        let refresh = input.refresh.unwrap_or(false);
-        let health = self.state.manager.health(None, refresh).await?;
-        database::call_tool_json(&ListConnectionsOutput {
+    ) -> Result<ListConnectionsOutput> {
+        let health = self
+            .state
+            .manager
+            .health(None, input.refresh.unwrap_or(false))
+            .await?;
+        Ok(ListConnectionsOutput {
             connections: health.connections,
         })
     }
@@ -21,45 +23,48 @@ impl DbMcpService {
     pub(super) async fn diagnose_connection(
         &self,
         input: DiagnoseConnectionInput,
-    ) -> Result<CallToolResult> {
+    ) -> Result<DiagnoseConnectionOutput> {
         let diagnostics = self
             .state
             .manager
             .diagnose(input.connection.as_deref(), input.deep.unwrap_or(false))
             .await?;
-        database::call_tool_json(&DiagnoseConnectionOutput { diagnostics })
+        Ok(DiagnoseConnectionOutput { diagnostics })
     }
 
-    pub(super) async fn list_schemas(&self, input: ListInput) -> Result<CallToolResult> {
+    pub(super) async fn list_schemas(&self, input: ListInput) -> Result<ListSchemasOutput> {
         let conn = self.state.manager.connection(input.connection.as_deref())?;
         let schemas = conn
             .list_schemas(input.filter.as_deref(), input.limit.unwrap_or(0))
             .await?;
-        database::call_tool_json(&ListSchemasOutput {
+        Ok(ListSchemasOutput {
             connection: conn.info().name,
             schemas,
         })
     }
 
-    pub(super) async fn list_tables(&self, input: ListInput) -> Result<CallToolResult> {
+    pub(super) async fn list_tables(&self, input: ListInput) -> Result<ListTablesOutput> {
         let conn = self.state.manager.connection(input.connection.as_deref())?;
         let schema = input.schema.as_deref();
         let tables = conn
             .list_tables(schema, input.filter.as_deref(), input.limit.unwrap_or(0))
             .await?;
-        database::call_tool_json(&ListTablesOutput {
+        Ok(ListTablesOutput {
             connection: conn.info().name,
             tables,
         })
     }
 
-    pub(super) async fn search_columns(&self, input: SearchColumnsInput) -> Result<CallToolResult> {
+    pub(super) async fn search_columns(
+        &self,
+        input: SearchColumnsInput,
+    ) -> Result<SearchColumnsOutput> {
         let conn = self.state.manager.connection(input.connection.as_deref())?;
         let schema = input.schema.as_deref();
         let matches = conn
             .search_columns(schema, input.filter.as_deref(), input.limit.unwrap_or(0))
             .await?;
-        database::call_tool_json(&SearchColumnsOutput {
+        Ok(SearchColumnsOutput {
             connection: conn.info().name,
             matches,
         })
@@ -68,47 +73,53 @@ impl DbMcpService {
     pub(super) async fn list_constraints(
         &self,
         input: ListConstraintsInput,
-    ) -> Result<CallToolResult> {
+    ) -> Result<ListConstraintsOutput> {
         let conn = self.state.manager.connection(input.connection.as_deref())?;
         let schema = input.schema.as_deref();
         let constraints = conn
             .list_constraints(schema, input.table.as_deref(), input.limit.unwrap_or(0))
             .await?;
-        database::call_tool_json(&ListConstraintsOutput {
+        Ok(ListConstraintsOutput {
             connection: conn.info().name,
             constraints,
         })
     }
 
-    pub(super) async fn list_indexes(&self, input: ListConstraintsInput) -> Result<CallToolResult> {
+    pub(super) async fn list_indexes(
+        &self,
+        input: ListConstraintsInput,
+    ) -> Result<ListIndexesOutput> {
         let conn = self.state.manager.connection(input.connection.as_deref())?;
         let schema = input.schema.as_deref();
         let indexes = conn
             .list_indexes(schema, input.table.as_deref(), input.limit.unwrap_or(0))
             .await?;
-        database::call_tool_json(&ListIndexesOutput {
+        Ok(ListIndexesOutput {
             connection: conn.info().name,
             indexes,
         })
     }
 
-    pub(super) async fn get_table_comments(&self, input: TableInput) -> Result<CallToolResult> {
+    pub(super) async fn get_table_comments(
+        &self,
+        input: TableInput,
+    ) -> Result<GetTableCommentsOutput> {
         let conn = self.state.manager.connection(input.connection.as_deref())?;
         let comments = conn
             .get_table_comments(input.schema.as_deref(), &input.table)
             .await?;
-        database::call_tool_json(&GetTableCommentsOutput {
+        Ok(GetTableCommentsOutput {
             connection: conn.info().name,
             comments,
         })
     }
 
-    pub(super) async fn describe_table(&self, input: TableInput) -> Result<CallToolResult> {
+    pub(super) async fn describe_table(&self, input: TableInput) -> Result<DescribeTableOutput> {
         let conn = self.state.manager.connection(input.connection.as_deref())?;
         let columns = conn
             .describe_table(input.schema.as_deref(), &input.table)
             .await?;
-        database::call_tool_json(&DescribeTableOutput {
+        Ok(DescribeTableOutput {
             connection: conn.info().name,
             schema: input
                 .schema
@@ -119,18 +130,21 @@ impl DbMcpService {
         })
     }
 
-    pub(super) async fn get_table_ddl(&self, input: TableInput) -> Result<CallToolResult> {
+    pub(super) async fn get_table_ddl(&self, input: TableInput) -> Result<GetTableDDLOutput> {
         let conn = self.state.manager.connection(input.connection.as_deref())?;
         let ddl = conn
             .get_table_ddl(input.schema.as_deref(), &input.table)
             .await?;
-        database::call_tool_json(&GetTableDDLOutput {
+        Ok(GetTableDDLOutput {
             connection: conn.info().name,
             ddl,
         })
     }
 
-    pub(super) async fn execute_query(&self, input: ExecuteQueryInput) -> Result<CallToolResult> {
+    pub(super) async fn execute_query(
+        &self,
+        input: ExecuteQueryInput,
+    ) -> Result<ExecuteQueryOutput> {
         let conn = self.state.manager.connection(input.connection.as_deref())?;
         let result = conn
             .execute_query(
@@ -139,7 +153,7 @@ impl DbMcpService {
                 self.state.manager.limits(),
             )
             .await?;
-        database::call_tool_json(&ExecuteQueryOutput {
+        Ok(ExecuteQueryOutput {
             connection: conn.info().name,
             result,
         })
@@ -148,18 +162,20 @@ impl DbMcpService {
     pub(super) async fn execute_queries(
         &self,
         input: ExecuteQueriesInput,
-    ) -> Result<CallToolResult> {
+    ) -> Result<ExecuteQueriesOutput> {
         let conn = self.state.manager.connection(input.connection.as_deref())?;
-        let output = execute_query_batch(&*conn, input, self.state.manager.limits()).await?;
-        database::call_tool_json(&output)
+        execute_query_batch(&*conn, input, self.state.manager.limits()).await
     }
 
-    pub(super) async fn explain_query(&self, input: ExplainQueryInput) -> Result<CallToolResult> {
+    pub(super) async fn explain_query(
+        &self,
+        input: ExplainQueryInput,
+    ) -> Result<ExplainQueryOutput> {
         let conn = self.state.manager.connection(input.connection.as_deref())?;
         let explain = conn
             .explain_query(&input.sql, self.state.manager.limits())
             .await?;
-        database::call_tool_json(&ExplainQueryOutput {
+        Ok(ExplainQueryOutput {
             connection: conn.info().name,
             explain,
         })

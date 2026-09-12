@@ -4,6 +4,8 @@ use clap::Parser;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, env, fs, path::PathBuf, time::Duration};
 
+use crate::cli::Command;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
 pub enum TransportMode {
@@ -20,6 +22,58 @@ pub enum HttpAuthMode {
     None,
     Bearer,
 }
+
+/// Which MCP tool surface the server exposes. `Canonical` is the default
+/// four-tool surface; `Legacy` keeps the original thirteen tools; `Both`
+/// exposes the union for migration.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolProfile {
+    #[default]
+    Canonical,
+    Legacy,
+    Both,
+}
+
+impl ToolProfile {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Canonical => "canonical",
+            Self::Legacy => "legacy",
+            Self::Both => "both",
+        }
+    }
+}
+
+/// Output encoding for the progressive CLI. This is a command-line option and
+/// deliberately does not participate in the server JSON config.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum OutputFormat {
+    #[default]
+    Json,
+    Text,
+}
+
+impl OutputFormat {
+    pub fn parse(value: &str) -> Result<Self> {
+        match value.to_lowercase().as_str() {
+            "json" => Ok(Self::Json),
+            "text" => Ok(Self::Text),
+            other => bail!("invalid output format {other:?}; expected \"json\" or \"text\""),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::Text => "text",
+        }
+    }
+}
+
+/// Shared statement cap for the canonical batch query path. MCP canonical
+/// `db_query` and any future CLI batch handling must use this single value.
+pub const MAX_BATCH_QUERIES: usize = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -39,6 +93,7 @@ pub struct ServerConfig {
     pub http_path: String,
     pub http_auth: HttpAuthConfig,
     pub http_cors_allowed_origins: Vec<String>,
+    pub tool_profile: ToolProfile,
 }
 
 impl Default for ServerConfig {
@@ -52,6 +107,7 @@ impl Default for ServerConfig {
             http_path: "/mcp".to_string(),
             http_auth: HttpAuthConfig::default(),
             http_cors_allowed_origins: vec![],
+            tool_profile: ToolProfile::default(),
         }
     }
 }
@@ -160,16 +216,22 @@ impl Default for SQLiteConfig {
 
 #[derive(Debug, Parser)]
 pub struct Cli {
-    #[arg(short = 'c', long, env = "DBMCP_CONFIG")]
+    #[arg(short = 'c', long, env = "DBMCP_CONFIG", global = true)]
     pub config: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub transport: Option<TransportMode>,
-    #[arg(long = "http-addr")]
+    #[arg(long = "http-addr", global = true)]
     pub http_addr: Option<String>,
-    #[arg(long = "http-path")]
+    #[arg(long = "http-path", global = true)]
     pub http_path: Option<String>,
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub debug: Option<bool>,
+    /// Result encoding for CLI subcommands; the MCP server is unaffected.
+    #[arg(long, value_enum, default_value = "json", global = true)]
+    pub format: OutputFormat,
+    /// Progressive CLI commands; omitting the subcommand starts the MCP server.
+    #[command(subcommand)]
+    pub command: Option<Command>,
 }
 
 impl Config {
@@ -397,6 +459,9 @@ fn apply_env(cfg: &mut Config) -> Result<()> {
             .map(str::to_string)
             .collect();
     }
+    if let Ok(v) = env::var("DBMCP_TOOL_PROFILE") {
+        cfg.server.tool_profile = parse_tool_profile(&v)?;
+    }
 
     let env_connections = load_env_connections();
     if cfg.connections.is_empty() {
@@ -421,6 +486,17 @@ fn parse_transport(value: &str) -> Result<TransportMode> {
         "http" => Ok(TransportMode::Http),
         "both" => Ok(TransportMode::Both),
         other => bail!("invalid transport {other}"),
+    }
+}
+
+fn parse_tool_profile(value: &str) -> Result<ToolProfile> {
+    match value.to_lowercase().as_str() {
+        "canonical" => Ok(ToolProfile::Canonical),
+        "legacy" => Ok(ToolProfile::Legacy),
+        "both" => Ok(ToolProfile::Both),
+        other => {
+            bail!("invalid tool profile {other:?}; expected \"canonical\", \"legacy\", or \"both\"")
+        }
     }
 }
 
@@ -604,5 +680,74 @@ mod tests {
         assert!(parse_auth_mode("none").is_ok());
         assert!(parse_auth_mode("beare").is_err());
         assert!(parse_auth_mode("basic").is_err());
+    }
+
+    #[test]
+    fn default_tool_profile_is_canonical() {
+        assert_eq!(ServerConfig::default().tool_profile, ToolProfile::Canonical);
+        assert_eq!(
+            Config::default().server.tool_profile,
+            ToolProfile::Canonical
+        );
+    }
+
+    #[test]
+    fn parse_tool_profile_accepts_known_values() {
+        assert_eq!(
+            parse_tool_profile("canonical").expect("canonical"),
+            ToolProfile::Canonical
+        );
+        assert_eq!(
+            parse_tool_profile("Legacy").expect("legacy"),
+            ToolProfile::Legacy
+        );
+        assert_eq!(parse_tool_profile("BOTH").expect("both"), ToolProfile::Both);
+    }
+
+    #[test]
+    fn parse_tool_profile_rejects_unknown_values() {
+        assert!(parse_tool_profile("bogus").is_err());
+        assert!(parse_tool_profile("").is_err());
+        assert!(parse_tool_profile("canonicall").is_err());
+    }
+
+    #[test]
+    fn tool_profile_round_trips_through_config_json() {
+        let parsed: ServerConfig = serde_json::from_str(r#"{"toolProfile":"legacy"}"#)
+            .expect("parse server config with tool profile");
+        assert_eq!(parsed.tool_profile, ToolProfile::Legacy);
+
+        let rendered = serde_json::to_value(ServerConfig {
+            tool_profile: ToolProfile::Both,
+            ..ServerConfig::default()
+        })
+        .expect("serialize server config");
+        assert_eq!(rendered["toolProfile"], "both");
+    }
+
+    #[test]
+    fn unknown_tool_profile_in_config_json_is_rejected() {
+        assert!(serde_json::from_str::<ServerConfig>(r#"{"toolProfile":"bogus"}"#).is_err());
+    }
+
+    #[test]
+    fn output_format_parse_covers_known_and_rejects_unknown() {
+        assert_eq!(
+            OutputFormat::parse("json").expect("json"),
+            OutputFormat::Json
+        );
+        assert_eq!(
+            OutputFormat::parse("TEXT").expect("text"),
+            OutputFormat::Text
+        );
+        assert!(OutputFormat::parse("yaml").is_err());
+        assert_eq!(OutputFormat::default(), OutputFormat::Json);
+        assert_eq!(OutputFormat::Json.as_str(), "json");
+        assert_eq!(OutputFormat::Text.as_str(), "text");
+    }
+
+    #[test]
+    fn shared_batch_limit_is_eight() {
+        assert_eq!(MAX_BATCH_QUERIES, 8);
     }
 }
