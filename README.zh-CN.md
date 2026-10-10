@@ -195,6 +195,7 @@ MCP 工具失败是工具级结果（`isError: true`），其 `structuredContent
 - PostgreSQL 与 Oracle 要求 `readOnly: true`。SQLite 要求 `readOnly: true` **且**使用只读 DSN（`mode=ro` 或 `immutable=1`）；`mode=rwc` 会被拒绝。
 - legacy `execute_query`/`execute_queries` 是唯一可能写入的入口，且仅当连接配置为 `readOnly: false` 时生效。`db_explain` 属于只读操作，不受批量只读门禁限制。
 - CLI 错误输出会脱敏凭据。
+- 工具 `input_schema` 根层不得出现 `oneOf`、`allOf`、`anyOf`：Anthropic 与 Bedrock 在 Responses 通道上会拒绝此类 schema。`db_query` 这类跨字段规则（「`sql` 与 `queries` 必须二选一」）由服务端强制，并在字段 `description` 中说明。
 
 ## 跨库注意事项
 

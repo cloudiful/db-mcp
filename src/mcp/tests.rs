@@ -147,7 +147,8 @@ async fn structured_tool_error(
 }
 
 /// Every tool must carry a description, an object input schema with properties,
-/// and a non-empty output schema.
+/// and a non-empty output schema. The input schema root must also stay free of
+/// `oneOf`/`allOf`/`anyOf`, which Anthropic and Bedrock reject with a 400.
 fn assert_tool_contracts(tools: &[Tool]) {
     for tool in tools {
         assert!(
@@ -163,6 +164,13 @@ fn assert_tool_contracts(tools: &[Tool]) {
             "{} input schema has no properties",
             tool.name
         );
+        for keyword in ["oneOf", "allOf", "anyOf"] {
+            assert!(
+                !tool.input_schema.contains_key(keyword),
+                "{} input schema carries a root-level {keyword}, which Anthropic and Bedrock reject",
+                tool.name
+            );
+        }
         let output = tool.output_schema.clone().expect("output schema");
         assert!(!output.is_empty(), "{} output schema is empty", tool.name);
     }

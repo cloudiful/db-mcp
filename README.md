@@ -195,6 +195,7 @@ The full cause chain, raw SQL, and DSN credentials never enter an MCP or CLI res
 - PostgreSQL and Oracle require `readOnly: true`. SQLite requires `readOnly: true` **and** a read-only DSN (`mode=ro` or `immutable=1`); `mode=rwc` is refused.
 - Legacy `execute_query`/`execute_queries` remain the only entries that can write, and only when a connection is configured with `readOnly: false`. `db_explain` is a read-only operation and is available without the batch read-only gate.
 - Credentials are redacted from CLI error output.
+- A tool `input_schema` must not carry `oneOf`, `allOf` or `anyOf` at its root: Anthropic and Bedrock reject such schemas on their Responses channel. Cross-field rules such as "`db_query` takes exactly one of `sql` or `queries`" are enforced server-side and described in the field `description`.
 
 ## Database notes
 

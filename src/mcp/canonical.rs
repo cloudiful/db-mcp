@@ -29,7 +29,7 @@ pub fn build_canonical_tools() -> Vec<Tool> {
         ),
         database::tool_schema::<DbQueryInput, DbQueryOutput>(
             "db_query",
-            "Run one query or a batch of 1 to 8 statements on a read-only connection. Results are truncated to protect MCP context.",
+            "Run one query or a batch of 1 to 8 statements on a read-only connection. Provide exactly one of `sql` or `queries`, never both. Results are truncated to protect MCP context.",
             read_only_annotations(),
         ),
         database::tool_schema::<DbExplainInput, ExplainQueryOutput>(

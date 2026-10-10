@@ -81,15 +81,22 @@ pub struct DbQueryItem {
 
 /// Canonical `db_query` input. `sql` and `queries` are mutually exclusive and
 /// exactly one must be present; `queries` carries the 1-8 batch bound.
+///
+/// The exclusivity rule is enforced by [`DbQueryInput::validate`] rather than
+/// by a top-level schema combinator: Anthropic and Bedrock reject
+/// `input_schema` whose root carries `oneOf`, `allOf` or `anyOf`, so such a
+/// schema makes the tool unusable on those upstreams.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
-#[schemars(extend("oneOf" = [
-    {"required": ["sql"], "not": {"required": ["queries"]}},
-    {"required": ["queries"], "not": {"required": ["sql"]}}
-]))]
 pub struct DbQueryInput {
     pub connection: Option<String>,
+    #[schemars(
+        description = "Mutually exclusive with `queries`: provide exactly one of `sql` or `queries`."
+    )]
     pub sql: Option<String>,
-    #[schemars(length(min = 1, max = MAX_BATCH_QUERIES))]
+    #[schemars(
+        length(min = 1, max = MAX_BATCH_QUERIES),
+        description = "Mutually exclusive with `sql`: 1 to 8 statements run in order. Provide exactly one of `sql` or `queries`."
+    )]
     pub queries: Option<Vec<DbQueryItem>>,
     pub max_rows: Option<usize>,
 }
@@ -215,15 +222,8 @@ mod tests {
     }
 
     #[test]
-    fn db_query_schema_encodes_exclusion_and_batch_bounds() {
+    fn db_query_schema_encodes_batch_bounds() {
         let schema = database::to_json_object::<DbQueryInput>();
-        let branches = schema["oneOf"].as_array().expect("oneOf constraint");
-        assert_eq!(branches.len(), 2);
-        let required: Vec<&str> = branches
-            .iter()
-            .map(|branch| branch["required"][0].as_str().expect("required entry"))
-            .collect();
-        assert!(required.contains(&"sql") && required.contains(&"queries"));
         assert_eq!(
             schema["properties"]["queries"]["minItems"].as_u64(),
             Some(1)
